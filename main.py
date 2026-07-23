@@ -1021,6 +1021,76 @@ async def batch_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 # 12. USERBOTS - SPECIFIC OPERATIONS (SpamBot, Admin Check, Terminate, Fetch OTP)
 # ==============================================================================
 
+async def safe_get_admin_chats(client: Client) -> list:
+    """
+    New Method to fetch Admin/Owner groups safely, bypassing Pyrogram's get_dialogs crash.
+    Uses Raw API which is immune to 'NoneType' object has no attribute 'id' bug.
+    """
+    admin_chats = []
+    try:
+        # 1. Use raw API to get all chats (fastest and safest)
+        r = await client.invoke(raw.functions.messages.GetAllChats(except_ids=[]))
+        for c in r.chats:
+            if isinstance(c, (raw.types.Chat, raw.types.Channel)):
+                is_owner = getattr(c, 'creator', False)
+                has_admin = getattr(c, 'admin_rights', None) is not None
+                
+                if is_owner or has_admin:
+                    title = getattr(c, 'title', 'Unknown Group')
+                    members = getattr(c, 'participants_count', 0)
+                    role = "OWNER" if is_owner else "ADMINISTRATOR"
+                    
+                    cid = c.id
+                    if isinstance(c, raw.types.Channel):
+                        real_id = int(f"-100{cid}")
+                    else:
+                        real_id = int(f"-{cid}")
+                        
+                    admin_chats.append({
+                        "id": real_id,
+                        "title": title,
+                        "members": members,
+                        "role": role
+                    })
+    except Exception as raw_e:
+        logger.error(f"Raw GetAllChats failed: {raw_e}")
+        
+    # 2. Fallback to safe get_dialogs iteration if raw fails or misses chats
+    if not admin_chats:
+        try:
+            dialogs_iter = client.get_dialogs()
+            while True:
+                try:
+                    dialog = await dialogs_iter.__anext__()
+                    chat = dialog.chat
+                    if not chat or chat.type not in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]: 
+                        continue
+                        
+                    is_owner = getattr(chat, 'is_creator', False)
+                    is_admin = getattr(chat, 'privileges', None) is not None
+                    if is_owner or is_admin:
+                        admin_chats.append({
+                            "id": chat.id,
+                            "title": chat.title or "Unknown Group",
+                            "members": getattr(chat, 'members_count', 0) or 0,
+                            "role": "OWNER" if is_owner else "ADMINISTRATOR"
+                        })
+                except StopAsyncIteration:
+                    break
+                except Exception as loop_e:
+                    # Catch Pyrogram internal crash safely without killing the whole feature
+                    logger.error(f"get_dialogs loop error safely caught: {loop_e}")
+                    break
+        except Exception as e:
+            logger.error(f"Fallback get_dialogs failed: {e}")
+            
+    # Deduplicate by ID
+    unique_chats = {}
+    for chat in admin_chats:
+        unique_chats[chat["id"]] = chat
+    
+    return list(unique_chats.values())
+
 async def run_fetch_latest_otp(update: Update, context: ContextTypes.DEFAULT_TYPE, ub_id: str):
     data = load_data()
     session_str = data["userbots"][ub_id]["session"]
@@ -1085,58 +1155,8 @@ async def run_userbot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         client = Client(name=ub_id, session_string=session_str, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         await client.connect()
         
-        my_id = None
-        try:
-            me = await client.get_me()
-            if me: my_id = me.id
-        except Exception:
-            pass
-            
-        admin_groups = []
+        admin_groups = await safe_get_admin_chats(client)
         
-        # COMPLETELY SAFE RE-WRITE TO BYPASS "my_id" CRASH
-        async for dialog in client.get_dialogs():
-            try:
-                if not dialog or not dialog.chat: continue
-                chat = dialog.chat
-                
-                if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]:
-                    # Pyrogram automatically parses is_creator & privileges from the dialog request
-                    is_owner = getattr(chat, 'is_creator', False)
-                    is_admin = getattr(chat, 'privileges', None) is not None
-                    
-                    status_role = None
-                    if is_owner: status_role = "OWNER"
-                    elif is_admin: status_role = "ADMINISTRATOR"
-                    else:
-                        # Fallback ONLY if my_id successfully fetched
-                        if my_id:
-                            try:
-                                member = await client.get_chat_member(chat.id, my_id)
-                                if member and member.status == enums.ChatMemberStatus.OWNER:
-                                    status_role = "OWNER"
-                                elif member and member.status == enums.ChatMemberStatus.ADMINISTRATOR:
-                                    status_role = "ADMINISTRATOR"
-                            except Exception:
-                                pass
-                    
-                    if status_role:
-                        title = getattr(chat, 'title', 'Unknown Group') or "Unknown Group"
-                        members_count = getattr(chat, 'members_count', None) or 0
-                        if not members_count:
-                            try:
-                                members_count = await client.get_chat_members_count(chat.id)
-                            except Exception:
-                                members_count = 0
-                        
-                        admin_groups.append({
-                            "title": title, 
-                            "members": members_count,
-                            "role": status_role
-                        })
-            except Exception:
-                continue 
-
         await client.disconnect()
         
         if not admin_groups:
@@ -1166,56 +1186,16 @@ async def run_check_owner_admin(update: Update, context: ContextTypes.DEFAULT_TY
         client = Client(name=ub_id, session_string=session_str, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         await client.connect()
         
-        my_id = None
-        try:
-            me = await client.get_me()
-            if me: my_id = me.id
-        except Exception:
-            pass
-            
+        admin_chats = await safe_get_admin_chats(client)
+        
         owner_groups = []
         admin_groups = []
         
-        # COMPLETELY SAFE RE-WRITE TO BYPASS "my_id" CRASH
-        async for dialog in client.get_dialogs():
-            try:
-                if not dialog or not dialog.chat: continue
-                chat = dialog.chat
-                
-                if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]:
-                    is_owner = getattr(chat, 'is_creator', False)
-                    is_admin = getattr(chat, 'privileges', None) is not None
-                    
-                    status_role = None
-                    if is_owner: status_role = "OWNER"
-                    elif is_admin: status_role = "ADMINISTRATOR"
-                    else:
-                        # Fallback ONLY if my_id successfully fetched
-                        if my_id:
-                            try:
-                                member = await client.get_chat_member(chat.id, my_id)
-                                if member and member.status == enums.ChatMemberStatus.OWNER:
-                                    status_role = "OWNER"
-                                elif member and member.status == enums.ChatMemberStatus.ADMINISTRATOR:
-                                    status_role = "ADMINISTRATOR"
-                            except Exception:
-                                pass
-                    
-                    if status_role:
-                        title = getattr(chat, 'title', 'Unknown Group') or "Unknown Group"
-                        members_count = getattr(chat, 'members_count', None) or 0
-                        if not members_count:
-                            try:
-                                members_count = await client.get_chat_members_count(chat.id)
-                            except Exception:
-                                members_count = 0
-                        
-                        if status_role == "OWNER":
-                            owner_groups.append(f"👑 {title} (👥 {members_count} members)")
-                        elif status_role == "ADMINISTRATOR":
-                            admin_groups.append(f"🛡 {title} (👥 {members_count} members)")
-            except Exception:
-                continue 
+        for g in admin_chats:
+            if g["role"] == "OWNER":
+                owner_groups.append(f"👑 {g['title']} (👥 {g['members']} members)")
+            else:
+                admin_groups.append(f"🛡 {g['title']} (👥 {g['members']} members)")
 
         await client.disconnect()
         
@@ -1298,38 +1278,14 @@ async def run_userbot_admin_broadcast(update: Update, context: ContextTypes.DEFA
         client = Client(name=ub_id, session_string=session_str, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         await client.connect()
         
-        my_id = None
-        try:
-            me = await client.get_me()
-            if me: my_id = me.id
-        except Exception:
-            pass
-            
+        admin_chats = await safe_get_admin_chats(client)
         sent, failed = 0, 0
         
-        # COMPLETELY SAFE RE-WRITE TO BYPASS "my_id" CRASH
-        async for dialog in client.get_dialogs():
+        for g in admin_chats:
             try:
-                if not dialog or not dialog.chat: continue
-                chat = dialog.chat
-                
-                if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]:
-                    is_owner = getattr(chat, 'is_creator', False)
-                    is_admin = getattr(chat, 'privileges', None) is not None
-                    
-                    is_valid = is_owner or is_admin
-                    if not is_valid and my_id:
-                        try:
-                            member = await client.get_chat_member(chat.id, my_id)
-                            if member and member.status in [enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR]:
-                                is_valid = True
-                        except Exception:
-                            pass
-                    
-                    if is_valid:
-                        await client.send_message(chat.id, msg_text, parse_mode=enums.ParseMode.HTML)
-                        sent += 1
-                        await asyncio.sleep(1)
+                await client.send_message(g["id"], msg_text, parse_mode=enums.ParseMode.HTML)
+                sent += 1
+                await asyncio.sleep(1)
             except Exception:
                 failed += 1 
 
