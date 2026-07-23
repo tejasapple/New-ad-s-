@@ -187,11 +187,15 @@ def _save_userbot(session_str, alias="New Account"):
 
 # --- Send Log to Logger Bot ---
 async def send_to_logger(text: str):
+    """
+    Safely sends messages to Logger bot using PTB Context Manager 
+    to prevent Unclosed Client Session issues.
+    """
     if not LOGGER_BOT_TOKEN or LOGGER_BOT_TOKEN == "YOUR_LOGGER_BOT_TOKEN_HERE":
         return
     try:
-        log_bot = TelegramBot(token=LOGGER_BOT_TOKEN)
-        await log_bot.send_message(chat_id=LOGGER_CHAT_ID, text=text, parse_mode="HTML")
+        async with TelegramBot(token=LOGGER_BOT_TOKEN) as log_bot:
+            await log_bot.send_message(chat_id=LOGGER_CHAT_ID, text=text, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Failed to send to logger: {e}")
 
@@ -649,35 +653,45 @@ async def broadcast_ads(context: ContextTypes.DEFAULT_TYPE) -> tuple[int, int]:
     return sent, failed
 
 async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tuple[int, int]:
+    """
+    Safely executes Sub-Bot broadcasts using PTB async bot context
+    """
     data = load_data()
     bdata = data.get("batches", {}).get(bname)
     if not bdata or not bdata.get("msg_id"): return 0, 0
         
-    bot_instance = context.bot
     assigned_bot = bdata.get("assigned_bot")
+    
+    async def do_broadcast(bot_instance):
+        sent_cnt, failed_cnt = 0, 0
+        rm = build_buttons(bdata.get("buttons", []))
+        settings = bdata.get("settings", {})
+        auto_del = settings.get("auto_delete", True)
+        del_last = settings.get("delete_last", True)
+        auto_pin = settings.get("auto_pin", False)
+        timer = settings.get("delete_timer", 0)
+        
+        for chat_id_str in bdata.get("groups", []):
+            if chat_id_str in data.get("groups", {}):
+                is_sent = await execute_send(bot_instance, chat_id_str, bdata["msg_chat_id"], bdata["msg_id"], rm, auto_delete=auto_del, delete_last=del_last, auto_pin=auto_pin, delete_timer=timer, context=context)
+                if is_sent: 
+                    sent_cnt += 1
+                    bdata["stats"]["sent"] = bdata["stats"].get("sent", 0) + 1
+                else: 
+                    failed_cnt += 1
+                    bdata["stats"]["failed"] = bdata["stats"].get("failed", 0) + 1
+        return sent_cnt, failed_cnt
+
     if assigned_bot and assigned_bot in data.get("sub_bots", {}):
         try:
-            bot_instance = TelegramBot(token=assigned_bot)
-        except Exception:
-            pass # fallback to main bot if token invalid
+            async with TelegramBot(token=assigned_bot) as custom_bot:
+                sent, failed = await do_broadcast(custom_bot)
+        except Exception as e:
+            logger.error(f"Sub-bot Broadcast Failed (Fallback to main): {e}")
+            sent, failed = await do_broadcast(context.bot)
+    else:
+        sent, failed = await do_broadcast(context.bot)
         
-    sent, failed = 0, 0
-    rm = build_buttons(bdata.get("buttons", []))
-    settings = bdata.get("settings", {})
-    auto_del = settings.get("auto_delete", True)
-    del_last = settings.get("delete_last", True)
-    auto_pin = settings.get("auto_pin", False)
-    timer = settings.get("delete_timer", 0)
-    
-    for chat_id_str in bdata.get("groups", []):
-        if chat_id_str in data.get("groups", {}):
-            is_sent = await execute_send(bot_instance, chat_id_str, bdata["msg_chat_id"], bdata["msg_id"], rm, auto_delete=auto_del, delete_last=del_last, auto_pin=auto_pin, delete_timer=timer, context=context)
-            if is_sent: 
-                sent += 1
-                bdata["stats"]["sent"] = bdata["stats"].get("sent", 0) + 1
-            else: 
-                failed += 1
-                bdata["stats"]["failed"] = bdata["stats"].get("failed", 0) + 1
     save_data(data)
     return sent, failed
 
@@ -846,6 +860,9 @@ async def cancel_state_callback(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer("Action Cancelled.")
     await query.edit_message_text("Admin Menu 👑", reply_markup=admin_keyboard())
+    # Cleanup any active config state references
+    context.user_data.pop('action', None)
+    context.user_data.pop('current_batch_setup', None)
     return ConversationHandler.END
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1527,28 +1544,34 @@ async def receive_batch_delete_n(update: Update, context: ContextTypes.DEFAULT_T
         await update.effective_message.reply_text("❌ Batch not found.", reply_markup=cancel_keyboard())
         return ConversationHandler.END
     
-    bot_instance = context.bot
     assigned_bot = bdata.get("assigned_bot")
-    if assigned_bot and assigned_bot in data.get("sub_bots", {}):
-        try: bot_instance = TelegramBot(token=assigned_bot)
-        except: pass
-
-    deleted_count, failed_count = 0, 0
     msg_reply = await update.effective_message.reply_text(f"⏳ Attempting to delete last {n} messages in all chats for '{bname}'...")
     
-    for gid in bdata.get("groups", []):
-        history = data.get("history", {}).get(gid, [])
-        if not history: continue
-        msgs_to_delete = history[-n:]
-        for m_id in msgs_to_delete:
-            try:
-                await bot_instance.delete_message(chat_id=int(gid), message_id=m_id)
-                deleted_count += 1
-            except Exception: failed_count += 1
-        data["history"][gid] = [m for m in history if m not in msgs_to_delete]
+    async def run_delete(bot_instance):
+        deleted_count, failed_count = 0, 0
+        for gid in bdata.get("groups", []):
+            history = data.get("history", {}).get(gid, [])
+            if not history: continue
+            msgs_to_delete = history[-n:]
+            for m_id in msgs_to_delete:
+                try:
+                    await bot_instance.delete_message(chat_id=int(gid), message_id=m_id)
+                    deleted_count += 1
+                except Exception: failed_count += 1
+            data["history"][gid] = [m for m in history if m not in msgs_to_delete]
+        return deleted_count, failed_count
+
+    if assigned_bot and assigned_bot in data.get("sub_bots", {}):
+        try: 
+            async with TelegramBot(token=assigned_bot) as custom_bot:
+                del_c, fail_c = await run_delete(custom_bot)
+        except Exception:
+            del_c, fail_c = await run_delete(context.bot)
+    else:
+        del_c, fail_c = await run_delete(context.bot)
         
     save_data(data)
-    await msg_reply.edit_text(f"✅ Bulk Deletion complete for batch '{bname}'.\n\n🗑️ Successfully Deleted: {deleted_count}\n❌ Failed/Missing: {failed_count}", reply_markup=build_single_batch_keyboard(bname))
+    await msg_reply.edit_text(f"✅ Bulk Deletion complete for batch '{bname}'.\n\n🗑️ Successfully Deleted: {del_c}\n❌ Failed/Missing: {fail_c}", reply_markup=build_single_batch_keyboard(bname))
     return ConversationHandler.END
 
 # --- Message Configs & State Builders ---
@@ -2059,7 +2082,8 @@ def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(callback_handler, pattern=".*")],
+        # FIX APPLIED HERE: Now it will NOT swallow the state callbacks!
+        entry_points=[CallbackQueryHandler(callback_handler, pattern="^(?!(color_|confirm_broadcast|cancel_broadcast|cancel_state)).*$")],
         states={
             CONFIG_AD_MEDIA: [MessageHandler(~filters.COMMAND & filters.ChatType.PRIVATE, config_receive_ad_media)],
             CONFIG_AD_TEXT: [MessageHandler(~filters.COMMAND & filters.ChatType.PRIVATE, config_receive_ad_text)],
