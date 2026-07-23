@@ -11,6 +11,8 @@ from typing import Dict, Any, Optional
 
 import pymongo
 from pyrogram import Client, enums, raw
+from pyrogram import filters as pyro_filters
+from pyrogram.types import Message as PyroMessage, ChatMemberUpdated as PyroChatMemberUpdated
 from pyrogram.errors import SessionPasswordNeeded, AuthKeyUnregistered, PeerIdInvalid
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember, Bot as TelegramBot
@@ -36,7 +38,7 @@ OWNER_ID = 8884734704
 LOGGER_BOT_TOKEN = "8920900541:AAEnP2uIG_FSAIRC5sG8rRhALt58dEXYI9U" 
 LOGGER_CHAT_ID = 8884734704
 
-# Pyrogram API Keys for Userbots & Sub-Bots
+# Pyrogram API Keys for Userbots & Sub-bots
 API_ID = 2040
 API_HASH = "b18441a1ff607e10a989891a5462e627"
 
@@ -185,24 +187,49 @@ def _save_userbot(session_str, alias="New Account"):
     }
     save_data(data)
 
-# --- Sub-Bot Auto-Healing Session Handler ---
-async def get_subbot_client(session_name: str, token: str) -> Client:
-    """Creates a Pyrogram client. If AuthKeyUnregistered is thrown due to session issues, it automatically recreates the session."""
-    client = Client(name=session_name, bot_token=token, api_id=API_ID, api_hash=API_HASH)
+# --- Active Sub-Bot Listeners (Replaces broken GetDialogs fetch) ---
+sub_bot_clients = {}
+
+async def start_subbot_listener(token: str, name: str):
+    if token in sub_bot_clients: return
     try:
-        await client.start()
-        return client
-    except AuthKeyUnregistered:
-        logger.warning(f"AuthKeyUnregistered caught for {session_name}. Deleting corrupted session files and retrying...")
-        if os.path.exists(f"{session_name}.session"):
-            os.remove(f"{session_name}.session")
-        if os.path.exists(f"{session_name}.session-journal"):
-            os.remove(f"{session_name}.session-journal")
+        bot_id = token.split(':')[0]
+        client = Client(name=f"sb_{bot_id}", bot_token=token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         
-        # Re-initialize after cleanup
-        client = Client(name=session_name, bot_token=token, api_id=API_ID, api_hash=API_HASH)
+        @client.on_message(pyro_filters.group | pyro_filters.channel)
+        async def sb_on_message(c: Client, message: PyroMessage):
+            chat = message.chat
+            if not chat: return
+            ctype = "channel" if str(chat.type) == "ChatType.CHANNEL" else "group"
+            save_chat_data(chat.id, chat.title, ctype)
+
+        @client.on_chat_member_updated()
+        async def sb_on_chat_member(c: Client, update: PyroChatMemberUpdated):
+            chat = update.chat
+            if update.new_chat_member and update.new_chat_member.user and update.new_chat_member.user.is_self:
+                status = update.new_chat_member.status
+                ctype = "channel" if str(chat.type) == "ChatType.CHANNEL" else "group"
+                if status in [enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.ADMINISTRATOR]:
+                    save_chat_data(chat.id, chat.title, ctype, chat.members_count or 0)
+                    await send_to_logger(f"🤖 <b>Sub-Bot ({name}) added to chat!</b>\n\n<b>Title:</b> {chat.title}")
+                elif status in [enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED]:
+                    remove_group_and_log(str(chat.id), chat.title)
+                    await send_to_logger(f"🛑 <b>Sub-Bot ({name}) removed from chat!</b>\n\n<b>Title:</b> {chat.title}")
+        
         await client.start()
-        return client
+        sub_bot_clients[token] = client
+        logger.info(f"Started Pyrogram listener for Sub-bot: {name}")
+    except Exception as e:
+        logger.error(f"Failed to start listener for Sub-bot {name}: {e}")
+
+async def stop_subbot_listener(token: str):
+    if token in sub_bot_clients:
+        try:
+            await sub_bot_clients[token].stop()
+            del sub_bot_clients[token]
+            logger.info("Stopped Sub-bot listener.")
+        except Exception as e:
+            logger.error(f"Error stopping Sub-bot: {e}")
 
 # --- Send Log to Logger Bot ---
 async def send_to_logger(text: str):
@@ -400,13 +427,6 @@ def build_single_batch_keyboard(bname: str) -> InlineKeyboardMarkup:
 
     kb = [
         [InlineKeyboardButton("📊 Get Full Info (To Logger)", callback_data=f"bat_fullinfo_{bname}")],
-    ]
-    
-    # NEW: Button to trigger group fetch for Sub-Bots directly in batch menu
-    if bot_assigned:
-        kb.append([InlineKeyboardButton("🔄 Fetch Sub-Bot Groups", callback_data=f"bat_fetchgrps_{bname}")])
-        
-    kb.extend([
         [InlineKeyboardButton("👥 Add/Remove Chats", callback_data=f"bat_edit_{bname}=0")],
         [InlineKeyboardButton(f"🤖 Bot: {bot_name} (Change)", callback_data=f"bat_assignbot_{bname}")],
         [InlineKeyboardButton(f"⚙️ Set Custom Msg ({is_msg_set})", callback_data=f"bat_setmsg_{bname}")],
@@ -418,7 +438,7 @@ def build_single_batch_keyboard(bname: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(f"⏱ Delay: {s.get('delay', 30)}s", callback_data=f"bat_delay_{bname}"), InlineKeyboardButton("📢 Send ONCE", callback_data=f"bat_send_{bname}")],
         [InlineKeyboardButton("🗑️ Delete Batch", callback_data=f"bat_del_{bname}")],
         [InlineKeyboardButton("🔙 Back to Batches", callback_data="groups_batches_menu")]
-    ])
+    ]
     return InlineKeyboardMarkup(kb)
 
 def build_batch_assignbot_keyboard(bname: str) -> InlineKeyboardMarkup:
@@ -446,7 +466,6 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     batch_groups = data.get("batches", {}).get(bname, {}).get("groups", [])
     all_sorted = sorted(groups.items(), key=lambda x: x[1].get("last_seen", 0), reverse=True)
     
-    # ISOLATION FIX: Filter out groups that are assigned to OTHER batches
     available_groups = []
     for gid, ginfo in all_sorted:
         in_other_batch = False
@@ -908,69 +927,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Admin Menu 👑", reply_markup=admin_keyboard())
         return ConversationHandler.END
 
-    # --- NEW FEATURE: Fetch Sub-Bot Groups Directly ---
-    if cd.startswith("bat_fetchgrps_"):
-        bname = cd.replace("bat_fetchgrps_", "", 1)
-        bdata = data.get("batches", {}).get(bname)
-        assigned_bot_token = bdata.get("assigned_bot")
-        
-        if not assigned_bot_token:
-            await query.answer("❌ No Sub-Bot assigned!", show_alert=True)
-            return ConversationHandler.END
-
-        msg = await query.message.reply_text("⏳ Fetching groups directly from the Sub-Bot... (This may take a few seconds)")
-        try:
-            bot_id = assigned_bot_token.split(':')[0]
-            session_name = f"subbot_{bot_id}"
-            
-            # Using the Auto-Healing Session Handler
-            temp_client = await get_subbot_client(session_name, assigned_bot_token)
-            
-            fetched_count = 0
-            today = get_today_date_str()
-            
-            try:
-                async for dialog in temp_client.get_dialogs():
-                    if dialog.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]:
-                        try:
-                            member = await temp_client.get_chat_member(dialog.chat.id, "me")
-                            if member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.MEMBER]:
-                                gid_str = str(dialog.chat.id)
-                                c_title = dialog.chat.title or "Unknown"
-                                c_type = "channel" if dialog.chat.type == enums.ChatType.CHANNEL else "group"
-                                c_members = dialog.chat.members_count or 0
-                                
-                                if gid_str not in data["groups"]:
-                                    data["groups"][gid_str] = {"title": c_title, "type": c_type, "last_seen": int(time.time()), "date": today, "joins_today": 0, "left_today": 0, "members": c_members}
-                                else:
-                                    data["groups"][gid_str]["title"] = c_title
-                                    data["groups"][gid_str]["members"] = c_members
-                                    data["groups"][gid_str]["last_seen"] = int(time.time())
-
-                                # ISOLATION FIX: Remove fetched group from ALL OTHER batches
-                                for other_bname, other_bdata in data["batches"].items():
-                                    if other_bname != bname and gid_str in other_bdata.get("groups", []):
-                                        other_bdata["groups"].remove(gid_str)
-                                
-                                # Add to current batch
-                                if gid_str not in data["batches"][bname]["groups"]:
-                                    data["batches"][bname]["groups"].append(gid_str)
-                                
-                                fetched_count += 1
-                        except Exception:
-                            pass
-            finally:
-                await temp_client.stop()
-                
-            save_data(data)
-            
-            await msg.edit_text(f"✅ Fetch Complete!\n\nAdded {fetched_count} groups/channels to Batch '{bname}'.\n(This bot's groups are now exclusively isolated to this batch).")
-            await query.edit_message_reply_markup(reply_markup=build_single_batch_keyboard(bname))
-        except Exception as e:
-            await msg.edit_text(f"❌ Error while fetching groups: {e}")
-        return ConversationHandler.END
-
-
     # Userbot Callbacks
     if cd == "userbots_menu":
         await query.edit_message_text("📱 **Manage Ads Accounts (Userbots)**\n\nHere you can add real user accounts to broadcast from, check their SpamBot restrictions, or terminate active sessions.", parse_mode="Markdown", reply_markup=userbots_keyboard())
@@ -1102,6 +1058,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         token_prefix = cd[7:]
         full_token = next((t for t in data["sub_bots"] if t.startswith(token_prefix)), None)
         if full_token:
+            asyncio.create_task(stop_subbot_listener(full_token)) # Stop Pyrogram listener
             del data["sub_bots"][full_token]
             save_data(data)
             await query.edit_message_text("🗑️ Sub-bot removed.", reply_markup=subbots_keyboard())
@@ -1244,19 +1201,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if assigned_bot_token:
             try:
                 bot_id = assigned_bot_token.split(':')[0]
-                session_name = f"subbot_{bot_id}"
-                
-                # Using the Auto-Healing Session Handler
-                temp_client = await get_subbot_client(session_name, assigned_bot_token)
-                
-                try:
-                    me = await temp_client.get_me()
-                finally:
-                    await temp_client.stop()
+                temp_client = Client(name=f"subbot_info_{bot_id}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
+                await temp_client.start()
+                me = await temp_client.get_me()
+                await temp_client.stop()
                 
                 info_text = (
                     f"🤖 **Sub-Bot Assigned: @{me.username}**\n\n"
-                    "ग्लीच और फाइल आईडी प्रॉब्लम से बचने के लिए:\n"
                     f"1. सीधे @{me.username} पर जाएँ और उसे Start करें।\n"
                     f"2. अपना एड्स मैसेज (Photo/Video/Text) **उसी बोट** में भेज दें।\n"
                     f"3. भेजने के बाद वापस यहाँ आएँ और नीचे **'✅ Done, Fetch Message'** पर क्लिक करें।"
@@ -1273,17 +1224,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"👇 **Step 1:** Batch '{bname}' ke liye Photo ya Video bhejein. (Ya sirf Text). HTML Parsing is Supported.", reply_markup=cancel_keyboard())
         return BATCH_CONFIG_MEDIA
 
-    # --- ENHANCED: Fetch Sub-Bot Message Directly ---
+    # --- Fetch Message directly from Sub-bot ---
     if cd.startswith("bat_fetchmsg_"):
         bname = cd.replace("bat_fetchmsg_", "", 1)
         assigned_bot_token = data.get("batches", {}).get(bname, {}).get("assigned_bot")
         msg = await query.message.reply_text("⏳ Fetching message directly from the Sub-Bot...")
         try:
             bot_id = assigned_bot_token.split(':')[0]
-            session_name = f"subbot_{bot_id}"
-            
-            # Using the Auto-Healing Session Handler
-            temp_client = await get_subbot_client(session_name, assigned_bot_token)
+            temp_client = Client(name=f"subbot_msg_{bot_id}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
+            await temp_client.start()
             
             fetched_msg = None
             try:
@@ -1615,7 +1564,11 @@ async def handle_sb_add_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
     data = load_data()
     data.setdefault("sub_bots", {})[token] = {"name": name, "added_at": int(time.time())}
     save_data(data)
-    await update.effective_message.reply_text("✅ Sub-bot added successfully!", reply_markup=subbots_keyboard())
+    
+    # Start the Pyrogram listener immediately for the new sub-bot
+    asyncio.create_task(start_subbot_listener(token, name))
+    
+    await update.effective_message.reply_text("✅ Sub-bot added successfully! The bot is now actively listening for new groups.", reply_markup=subbots_keyboard())
     return ConversationHandler.END
 
 # --- Wait Input Handler (For Batch Creation) ---
@@ -2182,6 +2135,10 @@ async def post_init(application: Application) -> None:
             delay = max(1, int(bdata["settings"].get("delay", 30)))
             application.job_queue.run_repeating(batch_cycle_job, interval=delay, first=delay, data=bname, name=f"batch_job_{bname}")
             logger.info(f"Batch {bname} cycle restored. Delay: {delay}s")
+
+    # Start Pyrogram Active Listeners for all saved sub-bots on startup
+    for token, info in data.get("sub_bots", {}).items():
+        application.create_task(start_subbot_listener(token, info["name"]))
 
 def main():
     if BOT_TOKEN == "PASTE_YOUR_NEW_BOT_TOKEN_HERE":
