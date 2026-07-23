@@ -36,7 +36,7 @@ API_ID = 2040
 API_HASH = "b18441a1ff607e10a989891a5462e627"
 
 # MongoDB Configuration
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb://127.0.0.1:27017/") 
+MONGO_URI = "mongodb+srv://Tejas7xx:mrxtejas7@cluster0.akhlgjf.mongodb.net/?appName=Cluster0"
 
 # ==========================================
 
