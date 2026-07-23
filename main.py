@@ -1,7 +1,7 @@
 # ==============================================================================
 # ADVANCED MULTI-BOT TELEGRAM BROADCASTER & USERBOT MANAGER
 # ==============================================================================
-# UPGRADED VERSION: Includes Auto-Restore, Logger Backups & Deep Error Handling
+# UPGRADED VERSION: Includes Auto-Restore, Logger Backups, Userbot Batches & Deep Error Handling
 # ==============================================================================
 
 import json
@@ -103,8 +103,8 @@ BUTTON_COLOR_STYLES = {
     SAVED_AD_BTN_NAME, SAVED_AD_BTN_LINK, SAVED_AD_BTN_COLOR,
     GLOBAL_CHANGE_DEL_TIMER, UB_BROADCAST_MSG, UB_ADD_PHONE, UB_ADD_CODE, 
     UB_ADD_2FA, UB_ADD_STRING, UB_ADD_BULK, UB_ADD_FILE, UB_RENAME,
-    SB_ADD_TOKEN, SB_ADD_NAME, BATCH_ASSIGN_BOT
-) = range(51)
+    SB_ADD_TOKEN, SB_ADD_NAME, BATCH_ASSIGN_BOT, UB_NEW_BATCH_NAME
+) = range(52)
 
 DEFAULT_DATA = {
     "configured": False,
@@ -132,6 +132,7 @@ DEFAULT_DATA = {
         "1": {}, "2": {}, "3": {}, "4": {}, "5": {}
     }, 
     "sub_bots": {}, 
+    "userbot_batches": ["Fresh", "Used", "Admin", "Uncategorized"], 
     "userbots": {}  
 }
 
@@ -228,18 +229,19 @@ def has_start_message(data: Dict[str, Any]) -> bool:
 def get_today_date_str() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
-def _save_userbot(session_str: str, alias: str = "New Account") -> None:
+def _save_userbot(session_str: str, alias: str = "New Account", batch: str = "Uncategorized") -> None:
     data = load_data()
     ub_id = hashlib.md5(session_str.encode()).hexdigest()[:10]
     data.setdefault("userbots", {})[ub_id] = {
         "session": session_str,
         "alias": alias,
+        "batch": batch,
         "status": "active",
         "is_broadcasting": False,
         "spambot": "Unknown"
     }
     save_data(data)
-    logger.info(f"Saved userbot session for alias: {alias}")
+    logger.info(f"Saved userbot session for alias: {alias} in batch: {batch}")
 
 # ==============================================================================
 # 4. GLOBAL LOGGER BOT ALERT MECHANISM
@@ -555,15 +557,33 @@ def subbots_keyboard() -> InlineKeyboardMarkup:
 def userbots_keyboard() -> InlineKeyboardMarkup:
     data = load_data()
     kb = []
-    for ub_id, info in data.get("userbots", {}).items():
+    for idx, (ub_id, info) in enumerate(data.get("userbots", {}).items(), 1):
         status = "🟢" if info.get("status") == "active" else "🔴"
         bc = "📡" if info.get("is_broadcasting") else ""
-        kb.append([InlineKeyboardButton(f"{status} {info.get('alias', 'Account')} {bc}", callback_data=f"ub_view_{ub_id}")])
+        batch = info.get("batch", "Uncategorized")
+        btn_text = f"{status} {idx}. [{batch}] {info.get('alias', 'Account')} {bc}"
+        kb.append([InlineKeyboardButton(btn_text, callback_data=f"ub_view_{ub_id}")])
     
     kb.append([InlineKeyboardButton("➕ Add Account", callback_data="ub_add_menu"), InlineKeyboardButton("🔄 Refresh All", callback_data="ub_refresh")])
     kb.append([InlineKeyboardButton("🤖 Check SpamBot (ALL)", callback_data="ub_spambot_all"), InlineKeyboardButton("🛑 Terminate Other Sessions (ALL)", callback_data="ub_term_all")])
     kb.append([InlineKeyboardButton("📥 Backup All Sessions (To Logger)", callback_data="ub_backup_all")])
     kb.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")])
+    return InlineKeyboardMarkup(kb)
+
+def ub_batch_selection_keyboard(ub_id: str) -> InlineKeyboardMarkup:
+    data = load_data()
+    batches = data.get("userbot_batches", ["Fresh", "Used", "Admin", "Uncategorized"])
+    kb = []
+    # Create 2 buttons per row for neatness
+    row = []
+    for batch in batches:
+        row.append(InlineKeyboardButton(f"📁 {batch}", callback_data=f"ub_setb_{ub_id}_{batch}"))
+        if len(row) == 2:
+            kb.append(row)
+            row = []
+    if row:
+        kb.append(row)
+    kb.append([InlineKeyboardButton("➕ Create New Batch", callback_data=f"ub_newbatch_{ub_id}")])
     return InlineKeyboardMarkup(kb)
 
 def userbot_add_menu() -> InlineKeyboardMarkup:
@@ -583,6 +603,7 @@ def userbot_single_keyboard(ub_id: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("✏️ Change Alias", callback_data=f"ub_rename_{ub_id}"), InlineKeyboardButton("📊 Get Status", callback_data=f"ub_stats_{ub_id}")],
         [InlineKeyboardButton("🤖 Check @SpamBot", callback_data=f"ub_spambot_{ub_id}"), InlineKeyboardButton("👑 Check Owner/Admin", callback_data=f"ub_owner_{ub_id}")],
         [InlineKeyboardButton("📢 Broadcast to Admin Groups", callback_data=f"ub_bcast_{ub_id}")],
+        [InlineKeyboardButton("🔄 Move to Another Batch", callback_data=f"ub_chbatch_{ub_id}")],
         [InlineKeyboardButton(bc_text, callback_data=f"ub_togbc_{ub_id}")],
         [InlineKeyboardButton("🛑 Terminate Other Sessions", callback_data=f"ub_termother_{ub_id}")],
         [InlineKeyboardButton("🗑️ Logout & Remove Account", callback_data=f"ub_delete_{ub_id}")],
@@ -1388,15 +1409,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🔑 Send the Pyrogram Session String:", reply_markup=cancel_keyboard())
         return UB_ADD_STRING
     if cd == "ub_add_bulk":
-        await query.edit_message_text("🗃️ Send Bulk Session Strings (one per line):", reply_markup=cancel_keyboard())
+        await query.edit_message_text("🗃️ Send Bulk Session Strings (one per line):\n(All will go to 'Uncategorized' batch first. You can move them later)", reply_markup=cancel_keyboard())
         return UB_ADD_BULK
     if cd == "ub_add_file":
-        await query.edit_message_text("📁 Upload a Pyrogram `.session` file OR `.txt` bulk backup file:", reply_markup=cancel_keyboard())
+        await query.edit_message_text("📁 Upload a Pyrogram `.session` file OR `.txt` bulk backup file:\n(All will go to 'Uncategorized' batch first)", reply_markup=cancel_keyboard())
         return UB_ADD_FILE
     
     if cd.startswith("ub_view_"):
         ub_id = cd[8:]
-        txt = f"📱 <b>Account Dashboard:</b> {data['userbots'][ub_id]['alias']}\n\nStatus: {data['userbots'][ub_id]['status']}\nSpambot: {data['userbots'][ub_id]['spambot']}"
+        batch = data['userbots'][ub_id].get('batch', 'Uncategorized')
+        txt = f"📱 <b>Account Dashboard:</b> {data['userbots'][ub_id]['alias']}\n\n📁 <b>Batch:</b> {batch}\n🟢 Status: {data['userbots'][ub_id]['status']}\n🤖 Spambot: {data['userbots'][ub_id]['spambot']}"
         await query.edit_message_text(txt, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
         return ConversationHandler.END
         
@@ -1472,31 +1494,47 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         asyncio.create_task(terminate_all_accounts_sessions(update, context))
         return ConversationHandler.END
         
+    # --- PURE STRINGS BACKUP (UPGRADED) ---
     if cd == "ub_backup_all":
-        # UPGRADED: EXPORT RAW STRINGS ONLY
-        sessions_txt = ""
+        batches = {}
         for ub_id, info in data.get("userbots", {}).items():
             if info.get("session"):
-                sessions_txt += f"{info.get('session', '')}\n\n"
-        
-        if not sessions_txt.strip():
+                b = info.get("batch", "Uncategorized")
+                batches.setdefault(b, []).append(info.get("session"))
+                
+        if not batches:
             await query.message.reply_text("❌ No sessions to backup.")
             return ConversationHandler.END
             
-        with open("backup_sessions.txt", "w", encoding="utf-8") as f:
-            f.write(sessions_txt)
-            
-        await query.message.reply_document(document=open("backup_sessions.txt", "rb"), caption="📥 Raw Session Strings Backup (File)")
+        await query.message.reply_text("⏳ Extracting & Sending Pure Strings to Logger Batch-wise...")
         
-        # Dispatch to Logger
         try:
             async with TelegramBot(token=LOGGER_BOT_TOKEN) as log_bot:
-                await log_bot.send_message(chat_id=LOGGER_CHAT_ID, text=f"📥 <b>RAW SESSIONS BACKUP</b>\n\n<code>{sessions_txt[:3500]}</code>", parse_mode="HTML")
-                await log_bot.send_document(chat_id=LOGGER_CHAT_ID, document=open("backup_sessions.txt", "rb"), caption="📥 Raw Session Strings Backup (File)")
+                for batch_name, sessions in batches.items():
+                    await log_bot.send_message(
+                        chat_id=LOGGER_CHAT_ID, 
+                        text=f"📂 <b>Batch: {batch_name}</b>\n(Strings will be sent below without extra text)", 
+                        parse_mode="HTML"
+                    )
+                    
+                    current_chunk = ""
+                    for s in sessions:
+                        # 4000 limit protection
+                        if len(current_chunk) + len(s) + 2 > 4000:
+                            await log_bot.send_message(chat_id=LOGGER_CHAT_ID, text=current_chunk.strip())
+                            current_chunk = s + "\n\n"
+                            await asyncio.sleep(1) 
+                        else:
+                            current_chunk += s + "\n\n"
+                            
+                    if current_chunk.strip():
+                        await log_bot.send_message(chat_id=LOGGER_CHAT_ID, text=current_chunk.strip())
+            
+            await query.message.reply_text("✅ All Pure Strings sent to Logger Bot successfully!", reply_markup=userbots_keyboard())
         except Exception as e:
             logger.error(f"Failed to send backup to logger: {e}")
+            await query.message.reply_text(f"❌ Backup Error: {e}")
             
-        os.remove("backup_sessions.txt")
         return ConversationHandler.END
     
     if cd.startswith("ub_otp_"):
@@ -1531,6 +1569,28 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data(data)
         await query.edit_message_reply_markup(reply_markup=userbot_single_keyboard(ub_id))
         return ConversationHandler.END
+
+    # --- BATCH MANAGEMENT CALLBACKS FOR ACCOUNTS ---
+    if cd.startswith("ub_chbatch_"):
+        ub_id = cd[11:]
+        await query.edit_message_text("📂 <b>Select a Batch for this Account:</b>", parse_mode="HTML", reply_markup=ub_batch_selection_keyboard(ub_id))
+        return ConversationHandler.END
+        
+    if cd.startswith("ub_setb_"):
+        parts = cd.split("_")
+        ub_id = parts[2]
+        batch_name = "_".join(parts[3:])
+        if ub_id in data["userbots"]:
+            data["userbots"][ub_id]["batch"] = batch_name
+            save_data(data)
+        await query.edit_message_text(f"✅ Account shifted to batch: <b>{batch_name}</b>", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
+        return ConversationHandler.END
+        
+    if cd.startswith("ub_newbatch_"):
+        ub_id = cd[12:]
+        context.user_data['pending_ub_id'] = ub_id
+        await query.edit_message_text("✍️ Send a short name for the new Userbot Batch:", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return UB_NEW_BATCH_NAME
 
     # ------------------ SUB-BOTS SECTION ------------------
     if cd == "subbots_menu":
@@ -1939,10 +1999,10 @@ async def handle_ub_add_code(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await client.disconnect()
         _save_userbot(session_str, alias=phone)
         
-        await send_to_logger(f"✅ <b>New Session Generated & Logged In</b>\n<b>Alias:</b> {phone}\n\n<code>{session_str}</code>\n\n<i>You can forward this string directly to the bot to login instantly later.</i>")
         ub_id = hashlib.md5(session_str.encode()).hexdigest()[:10]
         asyncio.create_task(start_userbot_listener(ub_id, session_str, phone))
-        await update.effective_message.reply_text("✅ Logged in successfully!", parse_mode="HTML", reply_markup=userbots_keyboard())
+        
+        await update.effective_message.reply_text("✅ Logged in successfully!\n\n👇 <b>Select a Batch for this Account:</b>", parse_mode="HTML", reply_markup=ub_batch_selection_keyboard(ub_id))
         return ConversationHandler.END
     except SessionPasswordNeeded:
         await update.effective_message.reply_text("🔐 2FA is required. Send your password:", parse_mode="HTML", reply_markup=cancel_keyboard())
@@ -1962,10 +2022,10 @@ async def handle_ub_add_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await client.disconnect()
         _save_userbot(session_str, alias=phone)
         
-        await send_to_logger(f"✅ <b>New Session Generated (2FA)</b>\n<b>Alias:</b> {phone}\n\n<code>{session_str}</code>\n\n<i>You can forward this string directly to the bot to login instantly later.</i>")
         ub_id = hashlib.md5(session_str.encode()).hexdigest()[:10]
         asyncio.create_task(start_userbot_listener(ub_id, session_str, phone))
-        await update.effective_message.reply_text("✅ Logged in successfully with 2FA!", parse_mode="HTML", reply_markup=userbots_keyboard())
+        
+        await update.effective_message.reply_text("✅ Logged in successfully with 2FA!\n\n👇 <b>Select a Batch for this Account:</b>", parse_mode="HTML", reply_markup=ub_batch_selection_keyboard(ub_id))
         return ConversationHandler.END
     except Exception as e:
         await update.effective_message.reply_text(f"❌ Error: {e}", parse_mode="HTML", reply_markup=cancel_keyboard())
@@ -1984,7 +2044,8 @@ async def handle_ub_add_string(update: Update, context: ContextTypes.DEFAULT_TYP
         _save_userbot(session_str, alias=alias)
         ub_id = hashlib.md5(session_str.encode()).hexdigest()[:10]
         asyncio.create_task(start_userbot_listener(ub_id, session_str, alias))
-        await update.effective_message.reply_text("✅ Session string imported successfully!", parse_mode="HTML", reply_markup=userbots_keyboard())
+        
+        await update.effective_message.reply_text("✅ Session string imported successfully!\n\n👇 <b>Select a Batch for this Account:</b>", parse_mode="HTML", reply_markup=ub_batch_selection_keyboard(ub_id))
     except Exception as e:
         await update.effective_message.reply_text(f"❌ Invalid session string: {e}", parse_mode="HTML", reply_markup=cancel_keyboard())
     return ConversationHandler.END
@@ -2008,7 +2069,7 @@ async def handle_ub_add_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE)
             asyncio.create_task(start_userbot_listener(ub_id, s, alias))
             success += 1
         except Exception: failed += 1
-    await msg.edit_text(f"✅ Bulk Import Complete.\n\n🟢 Success: {success}\n🔴 Failed: {failed}", parse_mode="HTML", reply_markup=userbots_keyboard())
+    await msg.edit_text(f"✅ Bulk Import Complete.\n\n🟢 Success: {success}\n🔴 Failed: {failed}\n\n(Added to 'Uncategorized' batch by default)", parse_mode="HTML", reply_markup=userbots_keyboard())
     return ConversationHandler.END
 
 async def handle_ub_add_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2047,7 +2108,7 @@ async def handle_ub_add_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     asyncio.create_task(start_userbot_listener(ub_id, s, alias))
                     success += 1
                 except: failed += 1
-            await msg.edit_text(f"✅ Bulk File Auto-Restore Complete.\n\n🟢 Success: {success}\n🔴 Failed: {failed}", reply_markup=userbots_keyboard())
+            await msg.edit_text(f"✅ Bulk File Auto-Restore Complete.\n\n🟢 Success: {success}\n🔴 Failed: {failed}\n\n(Added to 'Uncategorized' batch by default)", reply_markup=userbots_keyboard())
         except Exception as e:
             await update.effective_message.reply_text(f"❌ Error reading txt file: {e}")
         finally:
@@ -2065,7 +2126,8 @@ async def handle_ub_add_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _save_userbot(session_str, alias=alias)
             ub_id = hashlib.md5(session_str.encode()).hexdigest()[:10]
             asyncio.create_task(start_userbot_listener(ub_id, session_str, alias))
-            await update.effective_message.reply_text("✅ Session file loaded and imported successfully!", parse_mode="HTML", reply_markup=userbots_keyboard())
+            
+            await update.effective_message.reply_text("✅ Session file loaded and imported successfully!\n\n👇 <b>Select a Batch for this Account:</b>", parse_mode="HTML", reply_markup=ub_batch_selection_keyboard(ub_id))
         except Exception as e:
             await update.effective_message.reply_text(f"❌ Error loading file: {e}", parse_mode="HTML", reply_markup=cancel_keyboard())
         finally:
@@ -2083,6 +2145,28 @@ async def handle_ub_rename(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["userbots"][ub_id]["alias"] = new_alias
         save_data(data)
     await update.effective_message.reply_text("✅ Alias updated!", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
+    return ConversationHandler.END
+
+async def handle_ub_new_batch_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    batch_name = update.effective_message.text.strip()
+    batch_name = re.sub(r'[^a-zA-Z0-9\s]', '', batch_name).strip()
+    
+    if not batch_name:
+        await update.effective_message.reply_text("❌ Invalid name. Please send again:", reply_markup=cancel_keyboard())
+        return UB_NEW_BATCH_NAME
+        
+    ub_id = context.user_data.get('pending_ub_id')
+    data = load_data()
+    
+    if batch_name not in data.get("userbot_batches", []):
+        data.setdefault("userbot_batches", []).append(batch_name)
+        
+    if ub_id and ub_id in data.get("userbots", {}):
+        data["userbots"][ub_id]["batch"] = batch_name
+        
+    save_data(data)
+    
+    await update.effective_message.reply_text(f"✅ New Batch '{batch_name}' created and assigned to this account!", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
     return ConversationHandler.END
 
 async def handle_sb_add_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2738,6 +2822,7 @@ def main():
             UB_BROADCAST_MSG: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, run_userbot_admin_broadcast)],
             SB_ADD_TOKEN: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_sb_add_token)],
             SB_ADD_NAME: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_sb_add_name)],
+            UB_NEW_BATCH_NAME: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_ub_new_batch_name)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
