@@ -1023,67 +1023,88 @@ async def batch_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def safe_get_admin_chats(client: Client) -> list:
     """
-    New Method to fetch Admin/Owner groups safely, bypassing Pyrogram's get_dialogs crash.
-    Uses Raw API which is immune to 'NoneType' object has no attribute 'id' bug.
+    Upgraded Method to fetch Admin/Owner groups safely.
+    Uses standard Pyrogram get_dialogs with safe exception handling,
+    and falls back to Raw API GetDialogs for maximum reliability.
     """
     admin_chats = []
+    
+    # 1. Try Standard Pyrogram get_dialogs (Handles 99% of cases correctly now)
     try:
-        # 1. Use raw API to get all chats (fastest and safest)
-        r = await client.invoke(raw.functions.messages.GetAllChats(except_ids=[]))
-        for c in r.chats:
-            if isinstance(c, (raw.types.Chat, raw.types.Channel)):
-                is_owner = getattr(c, 'creator', False)
-                has_admin = getattr(c, 'admin_rights', None) is not None
+        async for dialog in client.get_dialogs():
+            chat = dialog.chat
+            if not chat or chat.type not in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]: 
+                continue
                 
-                if is_owner or has_admin:
-                    title = getattr(c, 'title', 'Unknown Group')
-                    members = getattr(c, 'participants_count', 0)
-                    role = "OWNER" if is_owner else "ADMINISTRATOR"
-                    
-                    cid = c.id
-                    if isinstance(c, raw.types.Channel):
-                        real_id = int(f"-100{cid}")
-                    else:
-                        real_id = int(f"-{cid}")
-                        
-                    admin_chats.append({
-                        "id": real_id,
-                        "title": title,
-                        "members": members,
-                        "role": role
-                    })
-    except Exception as raw_e:
-        logger.error(f"Raw GetAllChats failed: {raw_e}")
-        
-    # 2. Fallback to safe get_dialogs iteration if raw fails or misses chats
+            is_owner = getattr(chat, 'is_creator', False)
+            is_admin = getattr(chat, 'privileges', None) is not None
+            
+            if is_owner or is_admin:
+                admin_chats.append({
+                    "id": chat.id,
+                    "title": chat.title or "Unknown Group",
+                    "members": getattr(chat, 'members_count', 0) or 0,
+                    "role": "OWNER" if is_owner else "ADMINISTRATOR"
+                })
+    except Exception as e:
+        logger.error(f"Pyrogram get_dialogs fallback caught: {e}")
+
+    # 2. Fallback to Raw Telegram API if standard fails or misses
     if not admin_chats:
         try:
-            dialogs_iter = client.get_dialogs()
-            while True:
-                try:
-                    dialog = await dialogs_iter.__anext__()
-                    chat = dialog.chat
-                    if not chat or chat.type not in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]: 
-                        continue
-                        
-                    is_owner = getattr(chat, 'is_creator', False)
-                    is_admin = getattr(chat, 'privileges', None) is not None
-                    if is_owner or is_admin:
-                        admin_chats.append({
-                            "id": chat.id,
-                            "title": chat.title or "Unknown Group",
-                            "members": getattr(chat, 'members_count', 0) or 0,
-                            "role": "OWNER" if is_owner else "ADMINISTRATOR"
-                        })
-                except StopAsyncIteration:
-                    break
-                except Exception as loop_e:
-                    # Catch Pyrogram internal crash safely without killing the whole feature
-                    logger.error(f"get_dialogs loop error safely caught: {loop_e}")
-                    break
-        except Exception as e:
-            logger.error(f"Fallback get_dialogs failed: {e}")
+            offset_date = 0
+            offset_id = 0
+            offset_peer = raw.types.InputPeerEmpty()
+            limit = 100
             
+            while True:
+                r = await client.invoke(
+                    raw.functions.messages.GetDialogs(
+                        offset_date=offset_date,
+                        offset_id=offset_id,
+                        offset_peer=offset_peer,
+                        limit=limit,
+                        hash=0
+                    )
+                )
+                
+                for c in r.chats:
+                    if isinstance(c, (raw.types.Chat, raw.types.Channel)):
+                        is_owner = getattr(c, 'creator', False)
+                        has_admin = getattr(c, 'admin_rights', None) is not None
+                        
+                        if is_owner or has_admin:
+                            title = getattr(c, 'title', 'Unknown Group')
+                            members = getattr(c, 'participants_count', 0)
+                            role = "OWNER" if is_owner else "ADMINISTRATOR"
+                            
+                            cid = c.id
+                            if isinstance(c, raw.types.Channel):
+                                real_id = int(f"-100{cid}")
+                            else:
+                                real_id = int(f"-{cid}")
+                                
+                            admin_chats.append({
+                                "id": real_id,
+                                "title": title,
+                                "members": members,
+                                "role": role
+                            })
+                            
+                if not r.dialogs or len(r.dialogs) < limit:
+                    break
+                    
+                # Setup offset for next iteration
+                if r.messages:
+                    last_msg = r.messages[-1]
+                    offset_id = last_msg.id
+                    offset_date = last_msg.date
+                    offset_peer = raw.types.InputPeerEmpty()
+                else:
+                    break
+        except Exception as raw_e:
+            logger.error(f"Raw GetDialogs fallback failed: {raw_e}")
+
     # Deduplicate by ID
     unique_chats = {}
     for chat in admin_chats:
@@ -1690,7 +1711,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 bot_id = assigned_bot_token.split(':')[0]
                 subbot_setup_sessions[assigned_bot_token] = {"bname": bname, "step": "MEDIA"}
                 async with TelegramBot(token=assigned_bot_token) as sub_bot_client: me = await sub_bot_client.get_me()
-                info_text = (f"🤖 <b>Sub-Bot Setup Activated: @{me.username}</b>\n\nइस बैच का मैसेज <b>सीधे सब-बोट के अंदर</b> सेट होगा!\n\n👉 <a href='https://t.me/{me.username}'>यहाँ क्लिक करके @{me.username} पर जाएँ</a>\n👉 अपना Photo/Video/Text भेजें, सब-बोट आपको आगे (Text, Buttons) के लिए खुद गाइड करेगा।\n\n<i>(यहाँ मेन बोट में कुछ नहीं भेजना है)</i>")
+                info_text = (f"🤖 <b>Sub-Bot Setup Activated: @{me.username}</b>\n\nइस बैच का मैसेज <b>सीधे सब-बोट के अंदर</b> सेट होगा!\n\n👉 <a href='https://t.me/{me.username}'>यहाँ क्लिक करके @{me.username} पर जाएँ</a>\n👉 अपना Photo/Video/Text भेजें, सब-बोट आपको आगे (Text, Buttons) के लिए खुद गाइड करेगा।\n\n<i>(यहाँ मेन बोट में कुछ ഒന്നും भेजना है)</i>")
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Batch", callback_data=f"bat_menu_{bname}")]])
                 await query.edit_message_text(info_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
                 return ConversationHandler.END
