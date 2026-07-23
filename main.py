@@ -36,7 +36,7 @@ OWNER_ID = 8884734704
 LOGGER_BOT_TOKEN = "8920900541:AAEnP2uIG_FSAIRC5sG8rRhALt58dEXYI9U" 
 LOGGER_CHAT_ID = 8884734704
 
-# Pyrogram API Keys for Userbots
+# Pyrogram API Keys for Userbots & Sub-Bots
 API_ID = 2040
 API_HASH = "b18441a1ff607e10a989891a5462e627"
 
@@ -184,6 +184,25 @@ def _save_userbot(session_str, alias="New Account"):
         "spambot": "Unknown"
     }
     save_data(data)
+
+# --- Sub-Bot Auto-Healing Session Handler ---
+async def get_subbot_client(session_name: str, token: str) -> Client:
+    """Creates a Pyrogram client. If AuthKeyUnregistered is thrown due to session issues, it automatically recreates the session."""
+    client = Client(name=session_name, bot_token=token, api_id=API_ID, api_hash=API_HASH)
+    try:
+        await client.start()
+        return client
+    except AuthKeyUnregistered:
+        logger.warning(f"AuthKeyUnregistered caught for {session_name}. Deleting corrupted session files and retrying...")
+        if os.path.exists(f"{session_name}.session"):
+            os.remove(f"{session_name}.session")
+        if os.path.exists(f"{session_name}.session-journal"):
+            os.remove(f"{session_name}.session-journal")
+        
+        # Re-initialize after cleanup
+        client = Client(name=session_name, bot_token=token, api_id=API_ID, api_hash=API_HASH)
+        await client.start()
+        return client
 
 # --- Send Log to Logger Bot ---
 async def send_to_logger(text: str):
@@ -901,47 +920,48 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         msg = await query.message.reply_text("⏳ Fetching groups directly from the Sub-Bot... (This may take a few seconds)")
         try:
-            # FIX applied here: Added in_memory=True
             bot_id = assigned_bot_token.split(':')[0]
             session_name = f"subbot_{bot_id}"
-            temp_client = Client(name=session_name, bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
             
-            await temp_client.connect()
+            # Using the Auto-Healing Session Handler
+            temp_client = await get_subbot_client(session_name, assigned_bot_token)
             
             fetched_count = 0
             today = get_today_date_str()
             
-            async for dialog in temp_client.get_dialogs():
-                if dialog.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]:
-                    try:
-                        member = await temp_client.get_chat_member(dialog.chat.id, "me")
-                        if member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.MEMBER]:
-                            gid_str = str(dialog.chat.id)
-                            c_title = dialog.chat.title or "Unknown"
-                            c_type = "channel" if dialog.chat.type == enums.ChatType.CHANNEL else "group"
-                            c_members = dialog.chat.members_count or 0
-                            
-                            if gid_str not in data["groups"]:
-                                data["groups"][gid_str] = {"title": c_title, "type": c_type, "last_seen": int(time.time()), "date": today, "joins_today": 0, "left_today": 0, "members": c_members}
-                            else:
-                                data["groups"][gid_str]["title"] = c_title
-                                data["groups"][gid_str]["members"] = c_members
-                                data["groups"][gid_str]["last_seen"] = int(time.time())
+            try:
+                async for dialog in temp_client.get_dialogs():
+                    if dialog.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]:
+                        try:
+                            member = await temp_client.get_chat_member(dialog.chat.id, "me")
+                            if member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.MEMBER]:
+                                gid_str = str(dialog.chat.id)
+                                c_title = dialog.chat.title or "Unknown"
+                                c_type = "channel" if dialog.chat.type == enums.ChatType.CHANNEL else "group"
+                                c_members = dialog.chat.members_count or 0
+                                
+                                if gid_str not in data["groups"]:
+                                    data["groups"][gid_str] = {"title": c_title, "type": c_type, "last_seen": int(time.time()), "date": today, "joins_today": 0, "left_today": 0, "members": c_members}
+                                else:
+                                    data["groups"][gid_str]["title"] = c_title
+                                    data["groups"][gid_str]["members"] = c_members
+                                    data["groups"][gid_str]["last_seen"] = int(time.time())
 
-                            # ISOLATION FIX: Remove fetched group from ALL OTHER batches
-                            for other_bname, other_bdata in data["batches"].items():
-                                if other_bname != bname and gid_str in other_bdata.get("groups", []):
-                                    other_bdata["groups"].remove(gid_str)
-                            
-                            # Add to current batch
-                            if gid_str not in data["batches"][bname]["groups"]:
-                                data["batches"][bname]["groups"].append(gid_str)
-                            
-                            fetched_count += 1
-                    except Exception:
-                        pass
-            
-            await temp_client.disconnect()
+                                # ISOLATION FIX: Remove fetched group from ALL OTHER batches
+                                for other_bname, other_bdata in data["batches"].items():
+                                    if other_bname != bname and gid_str in other_bdata.get("groups", []):
+                                        other_bdata["groups"].remove(gid_str)
+                                
+                                # Add to current batch
+                                if gid_str not in data["batches"][bname]["groups"]:
+                                    data["batches"][bname]["groups"].append(gid_str)
+                                
+                                fetched_count += 1
+                        except Exception:
+                            pass
+            finally:
+                await temp_client.stop()
+                
             save_data(data)
             
             await msg.edit_text(f"✅ Fetch Complete!\n\nAdded {fetched_count} groups/channels to Batch '{bname}'.\n(This bot's groups are now exclusively isolated to this batch).")
@@ -1223,13 +1243,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         assigned_bot_token = data.get("batches", {}).get(bname, {}).get("assigned_bot")
         if assigned_bot_token:
             try:
-                # FIX applied here: Added in_memory=True
                 bot_id = assigned_bot_token.split(':')[0]
-                temp_client = Client(name=f"subbot_{bot_id}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
+                session_name = f"subbot_{bot_id}"
                 
-                await temp_client.connect()
-                me = await temp_client.get_me()
-                await temp_client.disconnect()
+                # Using the Auto-Healing Session Handler
+                temp_client = await get_subbot_client(session_name, assigned_bot_token)
+                
+                try:
+                    me = await temp_client.get_me()
+                finally:
+                    await temp_client.stop()
                 
                 info_text = (
                     f"🤖 **Sub-Bot Assigned: @{me.username}**\n\n"
@@ -1256,20 +1279,20 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         assigned_bot_token = data.get("batches", {}).get(bname, {}).get("assigned_bot")
         msg = await query.message.reply_text("⏳ Fetching message directly from the Sub-Bot...")
         try:
-            # FIX applied here: Added in_memory=True
             bot_id = assigned_bot_token.split(':')[0]
-            temp_client = Client(name=f"subbot_{bot_id}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
+            session_name = f"subbot_{bot_id}"
             
-            await temp_client.connect()
+            # Using the Auto-Healing Session Handler
+            temp_client = await get_subbot_client(session_name, assigned_bot_token)
+            
             fetched_msg = None
-            
             try:
                 async for m in temp_client.get_chat_history(user.id, limit=1):
                     fetched_msg = m
             except Exception as e:
                 logger.error(f"Failed to fetch history: {e}")
-                
-            await temp_client.disconnect()
+            finally:
+                await temp_client.stop()
             
             if fetched_msg:
                 data["batches"][bname]["msg_chat_id"] = user.id
