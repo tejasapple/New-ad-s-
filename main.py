@@ -28,7 +28,7 @@ from telegram.ext import (
 # ==========================================
 # CONFIGURATIONS
 # ==========================================
-BOT_TOKEN = "8761170700:AAEjc0x9E8jLw_4ww0M2SmMvPIpxrM9EddI"
+BOT_TOKEN = "8645771152:AAE7S26IwAy2MrvxMWygrGQUK4lHiZq_PYI"
 OWNER_ID = 8884734704
 
 # Pyrogram API Keys for Userbots (Default Android Official Apps Keys)
