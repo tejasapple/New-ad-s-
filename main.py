@@ -33,7 +33,7 @@ OWNER_ID = 8884734704
 
 # --- LOGGER BOT SETTINGS ---
 # Use a separate bot token here for logging, and your Chat ID/Channel ID where logs should go.
-LOGGER_BOT_TOKEN = "YOUR_LOGGER_BOT_TOKEN_HERE" 
+LOGGER_BOT_TOKEN = "8920900541:AAEnP2uIG_FSAIRC5sG8rRhALt58dEXYI9U" 
 LOGGER_CHAT_ID = 8884734704
 
 # Pyrogram API Keys for Userbots (Default Android Official Apps Keys)
