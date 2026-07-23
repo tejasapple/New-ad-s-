@@ -579,6 +579,7 @@ def userbot_single_keyboard(ub_id: str) -> InlineKeyboardMarkup:
     data = load_data()
     bc_text = "🟢 Flag: Broadcasting" if data.get("userbots",{}).get(ub_id,{}).get("is_broadcasting") else "🔴 Flag: Stopped"
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔑 Get Latest OTP", callback_data=f"ub_otp_{ub_id}")],
         [InlineKeyboardButton("✏️ Change Alias", callback_data=f"ub_rename_{ub_id}"), InlineKeyboardButton("📊 Get Status", callback_data=f"ub_stats_{ub_id}")],
         [InlineKeyboardButton("🤖 Check @SpamBot", callback_data=f"ub_spambot_{ub_id}"), InlineKeyboardButton("👑 Check Owner/Admin", callback_data=f"ub_owner_{ub_id}")],
         [InlineKeyboardButton("📢 Broadcast to Admin Groups", callback_data=f"ub_bcast_{ub_id}")],
@@ -1017,8 +1018,36 @@ async def batch_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ==============================================================================
-# 12. USERBOTS - SPECIFIC OPERATIONS (SpamBot, Admin Check, Terminate)
+# 12. USERBOTS - SPECIFIC OPERATIONS (SpamBot, Admin Check, Terminate, Fetch OTP)
 # ==============================================================================
+
+async def run_fetch_latest_otp(update: Update, context: ContextTypes.DEFAULT_TYPE, ub_id: str):
+    data = load_data()
+    session_str = data["userbots"][ub_id]["session"]
+    alias = data["userbots"][ub_id]["alias"]
+    try:
+        client = Client(name=ub_id, session_string=session_str, api_id=API_ID, api_hash=API_HASH, in_memory=True)
+        await client.connect()
+        
+        messages = []
+        # 777000 is Telegram's official service notifications account
+        async for msg in client.get_chat_history(777000, limit=3):
+            if msg.text:
+                messages.append(msg.text)
+        
+        await client.disconnect()
+        
+        if messages:
+            text = f"🔑 <b>Latest OTPs/Messages for {alias}:</b>\n\n"
+            for i, m in enumerate(messages, 1):
+                text += f"<b>{i}.</b> <code>{m[:300]}</code>\n\n"
+        else:
+            text = f"❌ No recent Telegram OTP messages found for {alias}."
+        
+        await update.callback_query.message.edit_text(text, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
+    except Exception as e:
+        await update.callback_query.message.edit_text(f"❌ Error fetching OTP: {e}", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
+
 
 async def run_spambot_check(update: Update, context: ContextTypes.DEFAULT_TYPE, ub_id: str):
     data = load_data()
@@ -1059,12 +1088,11 @@ async def run_userbot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         
         # UPGRADED: DEEP SAFE CHECK TO FIX NONETYPE ERROR
         async for dialog in client.get_dialogs():
-            if not dialog or not dialog.chat: continue
-            chat = dialog.chat
-            if not hasattr(chat, 'id') or not chat.id: continue
-            
-            if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-                try:
+            try:
+                if not dialog or not dialog.chat: continue
+                chat = dialog.chat
+                
+                if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
                     member = await client.get_chat_member(chat.id, "me")
                     if not member or not hasattr(member, 'status'): continue
                     
@@ -1077,7 +1105,9 @@ async def run_userbot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                             "members": members_count,
                             "role": str(member.status).split('.')[-1]
                         })
-                except Exception: pass
+            except Exception:
+                continue # Skip broken dialogs gracefully
+
         await client.disconnect()
         
         if not admin_groups:
@@ -1111,12 +1141,11 @@ async def run_check_owner_admin(update: Update, context: ContextTypes.DEFAULT_TY
         
         # UPGRADED: DEEP SAFE CHECK TO FIX NONETYPE ERROR
         async for dialog in client.get_dialogs():
-            if not dialog or not dialog.chat: continue
-            chat = dialog.chat
-            if not hasattr(chat, 'id') or not chat.id: continue
-            
-            if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-                try:
+            try:
+                if not dialog or not dialog.chat: continue
+                chat = dialog.chat
+                
+                if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
                     member = await client.get_chat_member(chat.id, "me")
                     if not member or not hasattr(member, 'status'): continue
                     
@@ -1127,7 +1156,9 @@ async def run_check_owner_admin(update: Update, context: ContextTypes.DEFAULT_TY
                         owner_groups.append(f"👑 {title} (👥 {members_count} members)")
                     elif member.status == enums.ChatMemberStatus.ADMINISTRATOR:
                         admin_groups.append(f"🛡 {title} (👥 {members_count} members)")
-                except Exception: pass
+            except Exception:
+                continue # Skip broken dialogs gracefully
+
         await client.disconnect()
         
         full_text = f"👑 <b>Ownership & Admin Status for:</b> {alias}\n\n"
@@ -1203,12 +1234,11 @@ async def run_userbot_admin_broadcast(update: Update, context: ContextTypes.DEFA
         
         # UPGRADED: DEEP SAFE CHECK
         async for dialog in client.get_dialogs():
-            if not dialog or not dialog.chat: continue
-            chat = dialog.chat
-            if not hasattr(chat, 'id') or not chat.id: continue
-            
-            if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-                try:
+            try:
+                if not dialog or not dialog.chat: continue
+                chat = dialog.chat
+                
+                if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
                     member = await client.get_chat_member(chat.id, "me")
                     if not member or not hasattr(member, 'status'): continue
                     
@@ -1216,7 +1246,9 @@ async def run_userbot_admin_broadcast(update: Update, context: ContextTypes.DEFA
                         await client.send_message(chat.id, msg_text, parse_mode=enums.ParseMode.HTML)
                         sent += 1
                         await asyncio.sleep(1)
-                except Exception: failed += 1
+            except Exception:
+                failed += 1 # Gracefully skip broken dialogs
+
         await client.disconnect()
         await reply.edit_text(f"✅ Userbot Broadcast Complete for {alias}!\n\n📤 Sent: {sent}\n❌ Failed: {failed}", reply_markup=userbot_single_keyboard(ub_id))
         await send_to_logger(f"📢 <b>Userbot Admin Broadcast</b>\nAccount: <code>{alias}</code>\nSent: {sent} | Failed: {failed}")
@@ -1380,31 +1412,37 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
         
     if cd == "ub_backup_all":
-        # UPGRADED: EXPORT TO LOGGER CHAT AUTOMATICALLY
+        # UPGRADED: EXPORT RAW STRINGS ONLY
         sessions_txt = ""
         for ub_id, info in data.get("userbots", {}).items():
-            sessions_txt += f"# {info.get('alias', 'Unknown')} | Status: {info.get('status', 'Unknown')}\n{info.get('session', '')}\n\n"
+            if info.get("session"):
+                sessions_txt += f"{info.get('session', '')}\n\n"
         
-        if not sessions_txt:
+        if not sessions_txt.strip():
             await query.message.reply_text("❌ No sessions to backup.")
             return ConversationHandler.END
             
         with open("backup_sessions.txt", "w", encoding="utf-8") as f:
             f.write(sessions_txt)
             
-        await query.message.reply_document(document=open("backup_sessions.txt", "rb"), caption="📥 All Accounts Session String Backup")
+        await query.message.reply_document(document=open("backup_sessions.txt", "rb"), caption="📥 Raw Session Strings Backup (File)")
         
         # Dispatch to Logger
         try:
             async with TelegramBot(token=LOGGER_BOT_TOKEN) as log_bot:
-                await log_bot.send_message(chat_id=LOGGER_CHAT_ID, text=f"📥 <b>MANUAL BACKUP EXPORTED</b>\n\n<code>{sessions_txt[:3500]}</code>", parse_mode="HTML")
-                await log_bot.send_document(chat_id=LOGGER_CHAT_ID, document=open("backup_sessions.txt", "rb"), caption="📥 All Accounts Session String Backup (File)")
+                await log_bot.send_message(chat_id=LOGGER_CHAT_ID, text=f"📥 <b>RAW SESSIONS BACKUP</b>\n\n<code>{sessions_txt[:3500]}</code>", parse_mode="HTML")
+                await log_bot.send_document(chat_id=LOGGER_CHAT_ID, document=open("backup_sessions.txt", "rb"), caption="📥 Raw Session Strings Backup (File)")
         except Exception as e:
             logger.error(f"Failed to send backup to logger: {e}")
             
         os.remove("backup_sessions.txt")
         return ConversationHandler.END
     
+    if cd.startswith("ub_otp_"):
+        await query.edit_message_text("⏳ Fetching latest OTP/Messages from Telegram (777000)...", parse_mode="HTML")
+        asyncio.create_task(run_fetch_latest_otp(update, context, cd[7:]))
+        return ConversationHandler.END
+
     if cd.startswith("ub_spambot_"):
         await query.edit_message_text("⏳ Checking with @SpamBot... Please wait.", parse_mode="HTML")
         asyncio.create_task(run_spambot_check(update, context, cd[11:]))
@@ -2564,7 +2602,8 @@ async def post_init(application: Application) -> None:
         if info.get("status") == "active":
             application.create_task(start_userbot_listener(ub_id, info["session"], info["alias"]))
             active_userbots += 1
-        sessions_txt += f"# {info.get('alias', 'Unknown')} | Status: {info.get('status', 'active')}\n{info.get('session', '')}\n\n"
+        if info.get("session"):
+            sessions_txt += f"{info.get('session', '')}\n\n"
 
     logger.info(f"Scheduled {active_userbots} Active Userbots for deep-listener reconnects.")
     
