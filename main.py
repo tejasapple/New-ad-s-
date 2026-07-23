@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional
 
 import pymongo
 from pyrogram import Client, enums, raw
-from pyrogram.errors import SessionPasswordNeeded, AuthKeyUnregistered
+from pyrogram.errors import SessionPasswordNeeded, AuthKeyUnregistered, PeerIdInvalid
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember, Bot as TelegramBot
 from telegram.error import Forbidden, BadRequest
@@ -187,10 +187,6 @@ def _save_userbot(session_str, alias="New Account"):
 
 # --- Send Log to Logger Bot ---
 async def send_to_logger(text: str):
-    """
-    Safely sends messages to Logger bot using PTB Context Manager 
-    to prevent Unclosed Client Session issues.
-    """
     if not LOGGER_BOT_TOKEN or LOGGER_BOT_TOKEN == "YOUR_LOGGER_BOT_TOKEN_HERE":
         return
     try:
@@ -385,6 +381,13 @@ def build_single_batch_keyboard(bname: str) -> InlineKeyboardMarkup:
 
     kb = [
         [InlineKeyboardButton("📊 Get Full Info (To Logger)", callback_data=f"bat_fullinfo_{bname}")],
+    ]
+    
+    # NEW: Button to trigger group fetch for Sub-Bots directly in batch menu
+    if bot_assigned:
+        kb.append([InlineKeyboardButton("🔄 Fetch Sub-Bot Groups", callback_data=f"bat_fetchgrps_{bname}")])
+        
+    kb.extend([
         [InlineKeyboardButton("👥 Add/Remove Chats", callback_data=f"bat_edit_{bname}=0")],
         [InlineKeyboardButton(f"🤖 Bot: {bot_name} (Change)", callback_data=f"bat_assignbot_{bname}")],
         [InlineKeyboardButton(f"⚙️ Set Custom Msg ({is_msg_set})", callback_data=f"bat_setmsg_{bname}")],
@@ -396,7 +399,7 @@ def build_single_batch_keyboard(bname: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(f"⏱ Delay: {s.get('delay', 30)}s", callback_data=f"bat_delay_{bname}"), InlineKeyboardButton("📢 Send ONCE", callback_data=f"bat_send_{bname}")],
         [InlineKeyboardButton("🗑️ Delete Batch", callback_data=f"bat_del_{bname}")],
         [InlineKeyboardButton("🔙 Back to Batches", callback_data="groups_batches_menu")]
-    ]
+    ])
     return InlineKeyboardMarkup(kb)
 
 def build_batch_assignbot_keyboard(bname: str) -> InlineKeyboardMarkup:
@@ -653,9 +656,6 @@ async def broadcast_ads(context: ContextTypes.DEFAULT_TYPE) -> tuple[int, int]:
     return sent, failed
 
 async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tuple[int, int]:
-    """
-    Safely executes Sub-Bot broadcasts using PTB async bot context
-    """
     data = load_data()
     bdata = data.get("batches", {}).get(bname)
     if not bdata or not bdata.get("msg_id"): return 0, 0
@@ -860,7 +860,6 @@ async def cancel_state_callback(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer("Action Cancelled.")
     await query.edit_message_text("Admin Menu 👑", reply_markup=admin_keyboard())
-    # Cleanup any active config state references
     context.user_data.pop('action', None)
     context.user_data.pop('current_batch_setup', None)
     return ConversationHandler.END
@@ -877,6 +876,59 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cd == "main_menu":
         await query.edit_message_text("Admin Menu 👑", reply_markup=admin_keyboard())
         return ConversationHandler.END
+
+    # --- NEW FEATURE: Fetch Sub-Bot Groups Directly ---
+    if cd.startswith("bat_fetchgrps_"):
+        bname = cd.replace("bat_fetchgrps_", "", 1)
+        bdata = data.get("batches", {}).get(bname)
+        assigned_bot_token = bdata.get("assigned_bot")
+        
+        if not assigned_bot_token:
+            await query.answer("❌ No Sub-Bot assigned!", show_alert=True)
+            return ConversationHandler.END
+
+        msg = await query.message.reply_text("⏳ Fetching groups directly from the Sub-Bot... (This may take a few seconds)")
+        try:
+            # unique session name to avoid sqlite DB clash in memory
+            temp_client = Client(name=f"temp_sb_grp_{int(time.time())}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
+            await temp_client.connect()
+            
+            fetched_count = 0
+            today = get_today_date_str()
+            
+            async for dialog in temp_client.get_dialogs():
+                if dialog.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]:
+                    try:
+                        member = await temp_client.get_chat_member(dialog.chat.id, "me")
+                        if member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.MEMBER]:
+                            gid_str = str(dialog.chat.id)
+                            c_title = dialog.chat.title or "Unknown"
+                            c_type = "channel" if dialog.chat.type == enums.ChatType.CHANNEL else "group"
+                            c_members = dialog.chat.members_count or 0
+                            
+                            if gid_str not in data["groups"]:
+                                data["groups"][gid_str] = {"title": c_title, "type": c_type, "last_seen": int(time.time()), "date": today, "joins_today": 0, "left_today": 0, "members": c_members}
+                            else:
+                                data["groups"][gid_str]["title"] = c_title
+                                data["groups"][gid_str]["members"] = c_members
+                                data["groups"][gid_str]["last_seen"] = int(time.time())
+
+                            if gid_str not in data["batches"][bname]["groups"]:
+                                data["batches"][bname]["groups"].append(gid_str)
+                            
+                            fetched_count += 1
+                    except Exception:
+                        pass
+            
+            await temp_client.disconnect()
+            save_data(data)
+            
+            await msg.edit_text(f"✅ Fetch Complete!\n\nAdded {fetched_count} groups/channels to Batch '{bname}'.\n(Main Bot database updated as well).")
+            await query.edit_message_reply_markup(reply_markup=build_single_batch_keyboard(bname))
+        except Exception as e:
+            await msg.edit_text(f"❌ Error while fetching groups: {e}")
+        return ConversationHandler.END
+
 
     # Userbot Callbacks
     if cd == "userbots_menu":
@@ -1150,7 +1202,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         assigned_bot_token = data.get("batches", {}).get(bname, {}).get("assigned_bot")
         if assigned_bot_token:
             try:
-                temp_client = Client(name="temp_sb", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
+                temp_client = Client(name=f"temp_sb_{int(time.time())}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
                 await temp_client.connect()
                 me = await temp_client.get_me()
                 await temp_client.disconnect()
@@ -1174,16 +1226,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"👇 **Step 1:** Batch '{bname}' ke liye Photo ya Video bhejein. (Ya sirf Text). HTML Parsing is Supported.", reply_markup=cancel_keyboard())
         return BATCH_CONFIG_MEDIA
 
+    # --- ENHANCED: Fetch Sub-Bot Message Directly ---
     if cd.startswith("bat_fetchmsg_"):
         bname = cd.replace("bat_fetchmsg_", "", 1)
         assigned_bot_token = data.get("batches", {}).get(bname, {}).get("assigned_bot")
         msg = await query.message.reply_text("⏳ Fetching message directly from the Sub-Bot...")
         try:
-            temp_client = Client(name="temp_sb", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
+            temp_client = Client(name=f"temp_sb_msg_{int(time.time())}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
             await temp_client.connect()
             fetched_msg = None
-            async for m in temp_client.get_chat_history(user.id, limit=1):
-                fetched_msg = m
+            
+            try:
+                async for m in temp_client.get_chat_history(user.id, limit=1):
+                    fetched_msg = m
+            except Exception as e:
+                logger.error(f"Failed to fetch history: {e}")
+                
             await temp_client.disconnect()
             
             if fetched_msg:
@@ -1192,10 +1250,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 save_data(data)
                 
                 context.user_data['current_batch_setup'] = bname
-                await msg.edit_text("✅ आपका मैसेज सब-बोट से सक्सेसफुली सेव हो चुका है!\n\n👇 **Step 3:** How many inline buttons do you want? (0-20)", reply_markup=cancel_keyboard())
+                await msg.edit_text("✅ आपका मैसेज सब-बोट से सक्सेसफुली फेच और सेव हो चुका है!\n\n👇 **Step 3:** How many inline buttons do you want? (0-20)", reply_markup=cancel_keyboard())
                 return BATCH_CONFIG_BTN_COUNT
             else:
-                await msg.edit_text("❌ मुझे कोई मैसेज नहीं मिला। कृपया कन्फर्म करें कि आपने सब-बोट में मैसेज भेजा है।", reply_markup=build_single_batch_keyboard(bname))
+                await msg.edit_text("❌ मुझे कोई मैसेज नहीं मिला। कृपया कन्फर्म करें कि आपने सब-बोट को Start करके उसे मैसेज भेजा है।", reply_markup=build_single_batch_keyboard(bname))
                 return ConversationHandler.END
         except Exception as e:
             await msg.edit_text(f"❌ Error fetching message: {e}", reply_markup=build_single_batch_keyboard(bname))
@@ -1519,7 +1577,7 @@ async def handle_wait_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == 'new_batch':
         raw_bname = msg.text.strip()[:15]
-        bname = re.sub(r'[^a-zA-Z0-9]', '', raw_bname) # Sanitized Batch Name to avoid IndexError
+        bname = re.sub(r'[^a-zA-Z0-9]', '', raw_bname) 
         if not bname:
             await msg.reply_text("❌ Batch name cannot be empty or only special characters. Try again:", reply_markup=cancel_keyboard())
             return WAIT_INPUT
@@ -2082,7 +2140,6 @@ def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     conv = ConversationHandler(
-        # FIX APPLIED HERE: Now it will NOT swallow the state callbacks!
         entry_points=[CallbackQueryHandler(callback_handler, pattern="^(?!(color_|confirm_broadcast|cancel_broadcast|cancel_state)).*$")],
         states={
             CONFIG_AD_MEDIA: [MessageHandler(~filters.COMMAND & filters.ChatType.PRIVATE, config_receive_ad_media)],
