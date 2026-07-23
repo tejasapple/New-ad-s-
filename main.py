@@ -901,10 +901,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         msg = await query.message.reply_text("⏳ Fetching groups directly from the Sub-Bot... (This may take a few seconds)")
         try:
-            # FIX: Removed in_memory=True to stop 401 AUTH_KEY_UNREGISTERED
+            # FIX applied here: Added in_memory=True
             bot_id = assigned_bot_token.split(':')[0]
             session_name = f"subbot_{bot_id}"
-            temp_client = Client(name=session_name, bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH)
+            temp_client = Client(name=session_name, bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
             
             await temp_client.connect()
             
@@ -1223,9 +1223,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         assigned_bot_token = data.get("batches", {}).get(bname, {}).get("assigned_bot")
         if assigned_bot_token:
             try:
-                # FIX: Persistent session name for sub-bots
+                # FIX applied here: Added in_memory=True
                 bot_id = assigned_bot_token.split(':')[0]
-                temp_client = Client(name=f"subbot_{bot_id}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH)
+                temp_client = Client(name=f"subbot_{bot_id}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
                 
                 await temp_client.connect()
                 me = await temp_client.get_me()
@@ -1256,9 +1256,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         assigned_bot_token = data.get("batches", {}).get(bname, {}).get("assigned_bot")
         msg = await query.message.reply_text("⏳ Fetching message directly from the Sub-Bot...")
         try:
-            # FIX: Persistent session name for sub-bots
+            # FIX applied here: Added in_memory=True
             bot_id = assigned_bot_token.split(':')[0]
-            temp_client = Client(name=f"subbot_{bot_id}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH)
+            temp_client = Client(name=f"subbot_{bot_id}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
             
             await temp_client.connect()
             fetched_msg = None
