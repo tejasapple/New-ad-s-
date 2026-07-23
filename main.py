@@ -38,7 +38,7 @@ OWNER_ID = 8884734704
 LOGGER_BOT_TOKEN = "8920900541:AAEnP2uIG_FSAIRC5sG8rRhALt58dEXYI9U" 
 LOGGER_CHAT_ID = 8884734704
 
-# Pyrogram API Keys for Userbots & Sub-bots
+# Pyrogram API Keys for Userbots & Sub-Bots
 API_ID = 2040
 API_HASH = "b18441a1ff607e10a989891a5462e627"
 
@@ -187,7 +187,7 @@ def _save_userbot(session_str, alias="New Account"):
     }
     save_data(data)
 
-# --- Active Sub-Bot Listeners (Replaces broken GetDialogs fetch) ---
+# --- Active Sub-Bot Listeners (Auto Group Catcher) ---
 sub_bot_clients = {}
 
 async def start_subbot_listener(token: str, name: str):
@@ -218,7 +218,7 @@ async def start_subbot_listener(token: str, name: str):
         
         await client.start()
         sub_bot_clients[token] = client
-        logger.info(f"Started Pyrogram listener for Sub-bot: {name}")
+        logger.info(f"Started Pyrogram Auto-Listener for Sub-bot: {name}")
     except Exception as e:
         logger.error(f"Failed to start listener for Sub-bot {name}: {e}")
 
@@ -464,17 +464,10 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     data = load_data()
     groups = data.get("groups", {})
     batch_groups = data.get("batches", {}).get(bname, {}).get("groups", [])
-    all_sorted = sorted(groups.items(), key=lambda x: x[1].get("last_seen", 0), reverse=True)
     
-    available_groups = []
-    for gid, ginfo in all_sorted:
-        in_other_batch = False
-        for other_bname, other_bdata in data.get("batches", {}).items():
-            if other_bname != bname and gid in other_bdata.get("groups", []):
-                in_other_batch = True
-                break
-        if not in_other_batch:
-            available_groups.append((gid, ginfo))
+    # ALL GROUPS FIX: Show all groups regardless of their current batch to fix the empty list issue!
+    all_sorted = sorted(groups.items(), key=lambda x: x[1].get("last_seen", 0), reverse=True)
+    available_groups = all_sorted 
             
     kb = []
     ITEMS_PER_PAGE = 10
@@ -778,10 +771,10 @@ async def run_spambot_check(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await client.disconnect()
         save_data(data)
         result_text = f"🤖 SpamBot Check Complete: {data['userbots'][ub_id]['spambot']}"
-        await update.callback_query.message.edit_text(result_text, reply_markup=userbot_single_keyboard(ub_id))
+        await update.callback_query.message.edit_text(result_text, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
         await send_to_logger(f"📡 <b>Userbot Alert</b>\nAccount <code>{data['userbots'][ub_id]['alias']}</code> Spambot Check -> {data['userbots'][ub_id]['spambot']}")
     except Exception as e: 
-        await update.callback_query.message.edit_text(f"❌ Error connecting: {e}", reply_markup=userbot_single_keyboard(ub_id))
+        await update.callback_query.message.edit_text(f"❌ Error connecting: {e}", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
 
 async def run_userbot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, ub_id: str):
     data = load_data()
@@ -805,7 +798,7 @@ async def run_userbot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await client.disconnect()
         
         if not admin_groups:
-            await update.callback_query.message.edit_text(f"📊 **Stats for {alias}**\n\nNot an Admin/Owner in any active groups.", parse_mode="Markdown", reply_markup=userbot_single_keyboard(ub_id))
+            await update.callback_query.message.edit_text(f"📊 <b>Stats for {alias}</b>\n\nNot an Admin/Owner in any active groups.", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
             return
             
         admin_groups.sort(key=lambda x: x["members"], reverse=True)
@@ -816,10 +809,10 @@ async def run_userbot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         for g in admin_groups: text += f"- {g['title']} | Members: {g['members']} | Role: {g['role']}\n"
         if len(text) > 4000: text = text[:4000] + "\n... (truncated)"
         
-        await update.callback_query.message.edit_text(text.replace('<b>', '**').replace('</b>', '**'), parse_mode="Markdown", reply_markup=userbot_single_keyboard(ub_id))
+        await update.callback_query.message.edit_text(text, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
         await send_to_logger(f"📡 <b>Userbot Stats Update ({alias}):</b>\n\n{text}")
     except Exception as e: 
-        await update.callback_query.message.edit_text(f"❌ Error gathering stats: {e}", reply_markup=userbot_single_keyboard(ub_id))
+        await update.callback_query.message.edit_text(f"❌ Error gathering stats: {e}", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
 
 async def terminate_other_sessions_job(update: Update, context: ContextTypes.DEFAULT_TYPE, ub_id: str):
     data = load_data()
@@ -830,10 +823,10 @@ async def terminate_other_sessions_job(update: Update, context: ContextTypes.DEF
         await client.connect()
         await client.invoke(raw.functions.auth.ResetAuthorizations())
         await client.disconnect()
-        await update.callback_query.message.edit_text("✅ All other sessions terminated successfully! Only this bot is logged in now.", reply_markup=userbot_single_keyboard(ub_id))
+        await update.callback_query.message.edit_text("✅ All other sessions terminated successfully! Only this bot is logged in now.", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
         await send_to_logger(f"📡 <b>Logger Info:</b>\nAccount <code>{alias}</code> -> Terminated other active sessions successfully.")
     except Exception as e: 
-        await update.callback_query.message.edit_text(f"❌ Error terminating sessions: {e}", reply_markup=userbot_single_keyboard(ub_id))
+        await update.callback_query.message.edit_text(f"❌ Error terminating sessions: {e}", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
         await send_to_logger(f"📡 <b>Logger Info:</b>\nAccount <code>{alias}</code> -> Failed to terminate sessions. Error: {e}")
 
 async def terminate_all_accounts_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -850,7 +843,7 @@ async def terminate_all_accounts_sessions(update: Update, context: ContextTypes.
             except Exception:
                 failed += 1
     text = f"✅ Global Session Termination Complete.\n\n🟢 Successfully Terminated: {success} accounts\n🔴 Failed: {failed} accounts"
-    await update.callback_query.message.edit_text(text, reply_markup=userbots_keyboard())
+    await update.callback_query.message.edit_text(text, parse_mode="HTML", reply_markup=userbots_keyboard())
     await send_to_logger(f"📡 <b>Global Terminate Sessions</b>\nSuccess: {success} | Failed: {failed}")
 
 async def run_userbot_admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -929,10 +922,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Userbot Callbacks
     if cd == "userbots_menu":
-        await query.edit_message_text("📱 **Manage Ads Accounts (Userbots)**\n\nHere you can add real user accounts to broadcast from, check their SpamBot restrictions, or terminate active sessions.", parse_mode="Markdown", reply_markup=userbots_keyboard())
+        await query.edit_message_text("📱 <b>Manage Ads Accounts (Userbots)</b>\n\nHere you can add real user accounts to broadcast from, check their SpamBot restrictions, or terminate active sessions.", parse_mode="HTML", reply_markup=userbots_keyboard())
         return ConversationHandler.END
     if cd == "ub_add_menu":
-        await query.edit_message_text("➕ **Add Userbot Account**\n\nChoose a method to login:", parse_mode="Markdown", reply_markup=userbot_add_menu())
+        await query.edit_message_text("➕ <b>Add Userbot Account</b>\n\nChoose a method to login:", parse_mode="HTML", reply_markup=userbot_add_menu())
         return ConversationHandler.END
     if cd == "ub_add_phone":
         await query.edit_message_text("📱 Send the Phone Number in international format (e.g., +1234567890):", reply_markup=cancel_keyboard())
@@ -949,7 +942,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if cd.startswith("ub_view_"):
         ub_id = cd[8:]
-        await query.edit_message_text(f"📱 **Account Dashboard:** {data['userbots'][ub_id]['alias']}\n\nStatus: {data['userbots'][ub_id]['status']}\nSpambot: {data['userbots'][ub_id]['spambot']}", parse_mode="Markdown", reply_markup=userbot_single_keyboard(ub_id))
+        await query.edit_message_text(f"📱 <b>Account Dashboard:</b> {data['userbots'][ub_id]['alias']}\n\nStatus: {data['userbots'][ub_id]['status']}\nSpambot: {data['userbots'][ub_id]['spambot']}", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
         return ConversationHandler.END
     if cd.startswith("ub_rename_"):
         ub_id = cd[10:]
@@ -966,7 +959,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ub_id in data["userbots"]:
             del data["userbots"][ub_id]
             save_data(data)
-        await query.edit_message_text("🗑️ Account removed successfully.", reply_markup=userbots_keyboard())
+        await query.edit_message_text("🗑️ Account removed successfully.", parse_mode="HTML", reply_markup=userbots_keyboard())
         return ConversationHandler.END
     if cd == "ub_refresh":
         msg = await query.message.reply_text("🔄 Refreshing all accounts... Please wait.")
@@ -1006,13 +999,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     results.append(f"👤 {info['alias']}: Error Checking")
         save_data(data)
-        final_txt = "🤖 **SpamBot Global Check Complete**\n\n" + "\n".join(results)
-        await msg.edit_text(final_txt)
+        final_txt = "🤖 <b>SpamBot Global Check Complete</b>\n\n" + "\n".join(results)
+        await msg.edit_text(final_txt, parse_mode="HTML")
         await send_to_logger(f"📡 <b>Global Spambot Check</b>\n\n" + "\n".join(results).replace('👤', '•'))
         await query.edit_message_reply_markup(reply_markup=userbots_keyboard())
         return ConversationHandler.END
     if cd == "ub_term_all":
-        await query.edit_message_text("⏳ Terminating all other sessions for ALL accounts... Please wait.")
+        await query.edit_message_text("⏳ Terminating all other sessions for ALL accounts... Please wait.", parse_mode="HTML")
         asyncio.create_task(terminate_all_accounts_sessions(update, context))
         return ConversationHandler.END
     if cd == "ub_backup_all":
@@ -1029,15 +1022,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     
     if cd.startswith("ub_spambot_"):
-        await query.edit_message_text("⏳ Checking with @SpamBot... Please wait.")
+        await query.edit_message_text("⏳ Checking with @SpamBot... Please wait.", parse_mode="HTML")
         asyncio.create_task(run_spambot_check(update, context, cd[11:]))
         return ConversationHandler.END
     if cd.startswith("ub_stats_"):
-        await query.edit_message_text("⏳ Gathering stats... Iterating dialogs, please wait.")
+        await query.edit_message_text("⏳ Gathering stats... Iterating dialogs, please wait.", parse_mode="HTML")
         asyncio.create_task(run_userbot_stats(update, context, cd[9:]))
         return ConversationHandler.END
     if cd.startswith("ub_termother_"):
-        await query.edit_message_text("⏳ Terminating all other sessions for this account...")
+        await query.edit_message_text("⏳ Terminating all other sessions for this account...", parse_mode="HTML")
         asyncio.create_task(terminate_other_sessions_job(update, context, cd[13:]))
         return ConversationHandler.END
     if cd.startswith("ub_togbc_"):
@@ -1049,19 +1042,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Sub-Bot Callbacks
     if cd == "subbots_menu":
-        await query.edit_message_text("🤖 **Manage Multi-Bot Architecture**\n\nAdd extra bot tokens here to assign them to different batches, avoiding rate limits.", parse_mode="Markdown", reply_markup=subbots_keyboard())
+        await query.edit_message_text("🤖 <b>Manage Multi-Bot Architecture</b>\n\nAdd extra bot tokens here to assign them to different batches, avoiding rate limits.", parse_mode="HTML", reply_markup=subbots_keyboard())
         return ConversationHandler.END
     if cd == "sb_add":
-        await query.edit_message_text("🤖 Send the New Bot Token:", reply_markup=cancel_keyboard())
+        await query.edit_message_text("🤖 Send the New Bot Token:", parse_mode="HTML", reply_markup=cancel_keyboard())
         return SB_ADD_TOKEN
     if cd.startswith("sb_del_"):
         token_prefix = cd[7:]
         full_token = next((t for t in data["sub_bots"] if t.startswith(token_prefix)), None)
         if full_token:
-            asyncio.create_task(stop_subbot_listener(full_token)) # Stop Pyrogram listener
+            asyncio.create_task(stop_subbot_listener(full_token)) 
             del data["sub_bots"][full_token]
             save_data(data)
-            await query.edit_message_text("🗑️ Sub-bot removed.", reply_markup=subbots_keyboard())
+            await query.edit_message_text("🗑️ Sub-bot removed.", parse_mode="HTML", reply_markup=subbots_keyboard())
         return ConversationHandler.END
 
     # Main Menus
@@ -1069,12 +1062,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚙️ Global Configurations", reply_markup=old_settings_keyboard())
         return ConversationHandler.END
     if cd == "saved_ads_menu":
-        await query.edit_message_text("💾 **Saved Ads Management**\n\nConfigure 5 Custom Ads to quickly apply them later.", parse_mode="Markdown", reply_markup=saved_ads_keyboard())
+        await query.edit_message_text("💾 <b>Saved Ads Management</b>\n\nConfigure 5 Custom Ads to quickly apply them later.", parse_mode="HTML", reply_markup=saved_ads_keyboard())
         return ConversationHandler.END
     if cd.startswith("saved_ad_edit_"):
         slot = cd.replace("saved_ad_edit_", "", 1)
         context.user_data['current_saved_ad_slot'] = slot
-        await query.edit_message_text(f"👇 **Step 1:** Saved Ad Slot {slot} ke liye Photo/Video bhejein (Ya sirf Text).", reply_markup=cancel_keyboard())
+        await query.edit_message_text(f"👇 <b>Step 1:</b> Saved Ad Slot {slot} ke liye Photo/Video bhejein (Ya sirf Text).", parse_mode="HTML", reply_markup=cancel_keyboard())
         return SAVED_AD_MEDIA
 
     if cd == "groups_batches_menu":
@@ -1094,29 +1087,29 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         end_idx = start_idx + ITEMS_PER_PAGE
         current_page_groups = sorted_groups[start_idx:end_idx]
         
-        chat_lines = [f"{'📢' if info.get('type') == 'channel' else '👥'} **{info.get('title', 'Unknown')}**\n   ↳ ID: `{gid}` | Added: {info.get('date', 'Unknown')}" for gid, info in current_page_groups]
-        text = f"🕒 **All Recent Groups (Page {page+1}/{total_pages}):**\n\n" + ("\n\n".join(chat_lines) if chat_lines else "No chats found.")
+        chat_lines = [f"{'📢' if info.get('type') == 'channel' else '👥'} <b>{info.get('title', 'Unknown')}</b>\n   ↳ ID: <code>{gid}</code> | Added: {info.get('date', 'Unknown')}" for gid, info in current_page_groups]
+        text = f"🕒 <b>All Recent Groups (Page {page+1}/{total_pages}):</b>\n\n" + ("\n\n".join(chat_lines) if chat_lines else "No chats found.")
         kb = []
         nav = []
         if page > 0: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"recent_groups={page-1}"))
         if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"recent_groups={page+1}"))
         if nav: kb.append(nav)
         kb.append([InlineKeyboardButton("🔙 Back to Batches", callback_data="groups_batches_menu")])
-        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
         return ConversationHandler.END
 
     if cd == "bat_new":
         context.user_data['action'] = 'new_batch'
-        await query.edit_message_text("✍️ Send a short name for the new batch (e.g. Batch1) [No Special Characters]:", reply_markup=cancel_keyboard())
+        await query.edit_message_text("✍️ Send a short name for the new batch (e.g. Batch1) [No Special Characters]:", parse_mode="HTML", reply_markup=cancel_keyboard())
         return WAIT_INPUT
 
     if cd.startswith("bat_menu_"):
         bname = cd.replace("bat_menu_", "", 1)
         bdata = data.get("batches", {}).get(bname)
         if not bdata: return ConversationHandler.END
-        txt = (f"🗂️ **Batch Dashboard:** {bname}\n👥 **Chats:** {len(bdata['groups'])}\n"
-               f"📤 **Stats:** {bdata.get('stats', {}).get('sent', 0)} Sent | {bdata.get('stats', {}).get('failed', 0)} Failed")
-        await query.edit_message_text(txt, reply_markup=build_single_batch_keyboard(bname), parse_mode="Markdown")
+        txt = (f"🗂️ <b>Batch Dashboard:</b> {bname}\n👥 <b>Chats:</b> {len(bdata['groups'])}\n"
+               f"📤 <b>Stats:</b> {bdata.get('stats', {}).get('sent', 0)} Sent | {bdata.get('stats', {}).get('failed', 0)} Failed")
+        await query.edit_message_text(txt, reply_markup=build_single_batch_keyboard(bname), parse_mode="HTML")
         return ConversationHandler.END
 
     if cd.startswith("bat_fullinfo_"):
@@ -1151,7 +1144,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if cd.startswith("bat_assignbot_"):
         bname = cd.replace("bat_assignbot_", "", 1)
-        await query.edit_message_text(f"🤖 Select which bot should execute broadcasts for '{bname}':", reply_markup=build_batch_assignbot_keyboard(bname))
+        await query.edit_message_text(f"🤖 Select which bot should execute broadcasts for '{bname}':", parse_mode="HTML", reply_markup=build_batch_assignbot_keyboard(bname))
         return ConversationHandler.END
 
     if cd.startswith("bat_setbot_"):
@@ -1163,14 +1156,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             full_token = next((t for t in data["sub_bots"] if t.startswith(token_prefix)), None)
             data["batches"][bname]["assigned_bot"] = full_token
         save_data(data)
-        await query.edit_message_text(f"✅ Bot assigned to {bname}.", reply_markup=build_single_batch_keyboard(bname))
+        await query.edit_message_text(f"✅ Bot assigned to {bname}.", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
         return ConversationHandler.END
 
     if cd.startswith("bat_edit_"):
         raw = cd.replace("bat_edit_", "", 1)
         bname, _, page = raw.partition("=")
         page = page if page else "0"
-        await query.edit_message_text(f"✅ Select chats for {bname}:\n(Page {int(page)+1})", reply_markup=build_batch_edit_keyboard(bname, int(page)))
+        await query.edit_message_text(f"✅ Select chats for {bname}:\n(Page {int(page)+1})", parse_mode="HTML", reply_markup=build_batch_edit_keyboard(bname, int(page)))
         return ConversationHandler.END
 
     if cd.startswith("btog_"):
@@ -1184,6 +1177,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if gid in batch_groups: 
             batch_groups.remove(gid)
         else:
+            # When toggling on, remove from all other batches
             for other_bname, other_bdata in data["batches"].items():
                 if other_bname != bname and gid in other_bdata.get("groups", []):
                     other_bdata["groups"].remove(gid)
@@ -1207,24 +1201,24 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await temp_client.stop()
                 
                 info_text = (
-                    f"🤖 **Sub-Bot Assigned: @{me.username}**\n\n"
+                    f"🤖 <b>Sub-Bot Assigned: @{me.username}</b>\n\n"
+                    "ग्लीच और फाइल आईडी प्रॉब्लम से बचने के लिए:\n"
                     f"1. सीधे @{me.username} पर जाएँ और उसे Start करें।\n"
-                    f"2. अपना एड्स मैसेज (Photo/Video/Text) **उसी बोट** में भेज दें।\n"
-                    f"3. भेजने के बाद वापस यहाँ आएँ और नीचे **'✅ Done, Fetch Message'** पर क्लिक करें।"
+                    f"2. अपना एड्स मैसेज (Photo/Video/Text) <b>उसी बोट</b> में भेज दें।\n"
+                    f"3. भेजने के बाद वापस यहाँ आएँ और नीचे <b>'✅ Done, Fetch Message'</b> पर क्लिक करें।"
                 )
                 kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Done, Fetch Message", callback_data=f"bat_fetchmsg_{bname}")],
                     [InlineKeyboardButton("🔙 Back / Cancel", callback_data=f"bat_menu_{bname}")]
                 ])
-                await query.edit_message_text(info_text, reply_markup=kb)
+                await query.edit_message_text(info_text, parse_mode="HTML", reply_markup=kb)
                 return ConversationHandler.END
             except Exception as e:
                 logger.error(f"Error connecting to Sub-bot temp: {e}")
                 
-        await query.edit_message_text(f"👇 **Step 1:** Batch '{bname}' ke liye Photo ya Video bhejein. (Ya sirf Text). HTML Parsing is Supported.", reply_markup=cancel_keyboard())
+        await query.edit_message_text(f"👇 <b>Step 1:</b> Batch '{bname}' ke liye Photo ya Video bhejein. (Ya sirf Text). HTML Parsing is Supported.", parse_mode="HTML", reply_markup=cancel_keyboard())
         return BATCH_CONFIG_MEDIA
 
-    # --- Fetch Message directly from Sub-bot ---
     if cd.startswith("bat_fetchmsg_"):
         bname = cd.replace("bat_fetchmsg_", "", 1)
         assigned_bot_token = data.get("batches", {}).get(bname, {}).get("assigned_bot")
@@ -1249,18 +1243,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 save_data(data)
                 
                 context.user_data['current_batch_setup'] = bname
-                await msg.edit_text("✅ आपका मैसेज सब-बोट से सक्सेसफुली फेच और सेव हो चुका है!\n\n👇 **Step 3:** How many inline buttons do you want? (0-20)", reply_markup=cancel_keyboard())
+                await msg.edit_text("✅ आपका मैसेज सब-बोट से सक्सेसफुली फेच और सेव हो चुका है!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
                 return BATCH_CONFIG_BTN_COUNT
             else:
-                await msg.edit_text("❌ मुझे कोई मैसेज नहीं मिला। कृपया कन्फर्म करें कि आपने सब-बोट को Start करके उसे मैसेज भेजा है।", reply_markup=build_single_batch_keyboard(bname))
+                await msg.edit_text("❌ मुझे कोई मैसेज नहीं मिला। कृपया कन्फर्म करें कि आपने सब-बोट को Start करके उसे मैसेज भेजा है।", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
                 return ConversationHandler.END
         except Exception as e:
-            await msg.edit_text(f"❌ Error fetching message: {e}", reply_markup=build_single_batch_keyboard(bname))
+            await msg.edit_text(f"❌ Error fetching message: {e}", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
             return ConversationHandler.END
 
     if cd.startswith("bat_usesaved_"):
         bname = cd.replace("bat_usesaved_", "", 1)
-        await query.edit_message_text(f"📂 Select a Saved Ad for Batch '{bname}':", reply_markup=build_batch_usesaved_keyboard(bname))
+        await query.edit_message_text(f"📂 Select a Saved Ad for Batch '{bname}':", parse_mode="HTML", reply_markup=build_batch_usesaved_keyboard(bname))
         return ConversationHandler.END
 
     if cd.startswith("bat_applysaved_"):
@@ -1272,20 +1266,20 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["batches"][bname]["msg_id"] = ad["msg_id"]
             data["batches"][bname]["buttons"] = ad.get("buttons", [])
             save_data(data)
-            await query.edit_message_text(f"✅ Saved Ad Slot {slot} applied to Batch '{bname}'!", reply_markup=build_single_batch_keyboard(bname))
+            await query.edit_message_text(f"✅ Saved Ad Slot {slot} applied to Batch '{bname}'!", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
         return ConversationHandler.END
         
     if cd.startswith("bat_delmsg_"):
         bname = cd.replace("bat_delmsg_", "", 1)
         context.user_data['current_batch_setup'] = bname
-        await query.edit_message_text(f"🧹 Kitne recent messages saare chats se delete karne hain '{bname}' ke liye? \n\n(Ek number bhejein, jaise 10)", parse_mode="Markdown", reply_markup=cancel_keyboard())
+        await query.edit_message_text(f"🧹 Kitne recent messages saare chats se delete karne hain '{bname}' ke liye? \n\n(Ek number bhejein, jaise 10)", parse_mode="HTML", reply_markup=cancel_keyboard())
         return BATCH_DELETE_N_PROMPT
 
     if cd.startswith("bat_send_"):
         bname = cd.replace("bat_send_", "", 1)
         await query.edit_message_text(f"Sending ONE TIME broadcast to batch {bname}...")
         sent, failed = await broadcast_batch(context, bname)
-        await query.message.reply_text(f"Batch Broadcast complete.\n✅ Sent: {sent}\n❌ Failed: {failed}", reply_markup=build_single_batch_keyboard(bname))
+        await query.message.reply_text(f"Batch Broadcast complete.\n✅ Sent: {sent}\n❌ Failed: {failed}", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
         return ConversationHandler.END
 
     if cd.startswith("bat_tog_bcast_"):
@@ -1318,7 +1312,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = data["batches"][bname]["settings"].get("auto_delete", True)
         if not state:
             context.user_data['current_batch_setup'] = bname
-            await query.edit_message_text("⏱ **Auto-Delete ON!**\n\nKitne seconds baad message delete hona chahiye? (e.g., 30):", reply_markup=cancel_keyboard())
+            await query.edit_message_text("⏱ <b>Auto-Delete ON!</b>\n\nKitne seconds baad message delete hona chahiye? (e.g., 30):", parse_mode="HTML", reply_markup=cancel_keyboard())
             return BATCH_CHANGE_DEL_TIMER
         else:
             data["batches"][bname]["settings"]["auto_delete"] = False
@@ -1337,7 +1331,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cd.startswith("bat_delay_"):
         bname = cd.replace("bat_delay_", "", 1)
         context.user_data['current_batch_setup'] = bname
-        await query.edit_message_text("⏱ Send new loop delay for this batch in seconds (e.g. 60):", reply_markup=cancel_keyboard())
+        await query.edit_message_text("⏱ Send new loop delay for this batch in seconds (e.g. 60):", parse_mode="HTML", reply_markup=cancel_keyboard())
         return BATCH_CHANGE_DELAY
 
     if cd.startswith("bat_del_"):
@@ -1346,7 +1340,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del data["batches"][bname]
             save_data(data)
             manage_batch_job(context, bname, False)
-        await query.edit_message_text(f"🗑️ Batch {bname} deleted.", reply_markup=build_batches_keyboard())
+        await query.edit_message_text(f"🗑️ Batch {bname} deleted.", parse_mode="HTML", reply_markup=build_batches_keyboard())
         return ConversationHandler.END
 
     if cd.startswith("stats"):
@@ -1356,11 +1350,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channels_count = sum(1 for g in groups.values() if g.get("type") == "channel")
         groups_count = len(groups) - channels_count
         final_text = (
-            f"📊 **GLOBAL OVERVIEW**\n\n🚀 Total Broadcasts: {data.get('total_broadcasts_sent', 0)}\n"
+            f"📊 <b>GLOBAL OVERVIEW</b>\n\n🚀 Total Broadcasts: {data.get('total_broadcasts_sent', 0)}\n"
             f"👥 Bot Users: {len(users)}\n✅ Active Chats: {len(groups)} (📢 {channels_count} Channels, 👥 {groups_count} Groups)\n"
-            f"❌ Kicked/Deleted: {len(deleted)}\n\n👇 **Select a Date to view Chats added on that day:**\n(Page {page+1})"
+            f"❌ Kicked/Deleted: {len(deleted)}\n\n👇 <b>Select a Date to view Chats added on that day:</b>\n(Page {page+1})"
         )
-        await query.edit_message_text(final_text, parse_mode="Markdown", reply_markup=build_date_stats_keyboard(page))
+        await query.edit_message_text(final_text, parse_mode="HTML", reply_markup=build_date_stats_keyboard(page))
         return ConversationHandler.END
 
     if cd.startswith("showdate_"):
@@ -1373,63 +1367,63 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_pages = max(1, (len(date_groups) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
         start_idx = int(page) * ITEMS_PER_PAGE
         
-        chat_lines = [f"🔹 **{info.get('title', 'Unknown')}** ({'📢 Channel' if info.get('type') == 'channel' else '👥 Group'})\n   ↳ In: {info.get('joins_today', 0)} | Out: {info.get('left_today', 0)}" for gid, info in date_groups[start_idx:start_idx+ITEMS_PER_PAGE]]
-        text = f"📅 **Chats added on {date_str} (Page {int(page)+1}/{total_pages}):**\n\n" + ("\n\n".join(chat_lines) if chat_lines else "No chats found.")
+        chat_lines = [f"🔹 <b>{info.get('title', 'Unknown')}</b> ({'📢 Channel' if info.get('type') == 'channel' else '👥 Group'})\n   ↳ In: {info.get('joins_today', 0)} | Out: {info.get('left_today', 0)}" for gid, info in date_groups[start_idx:start_idx+ITEMS_PER_PAGE]]
+        text = f"📅 <b>Chats added on {date_str} (Page {int(page)+1}/{total_pages}):</b>\n\n" + ("\n\n".join(chat_lines) if chat_lines else "No chats found.")
         kb, nav = [], []
         if int(page) > 0: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"showdate_{date_str}={int(page)-1}"))
         if int(page) < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"showdate_{date_str}={int(page)+1}"))
         if nav: kb.append(nav)
         kb.append([InlineKeyboardButton("🔙 Back to Dates", callback_data="stats=0")])
-        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
         return ConversationHandler.END
 
     if cd == "configure_now":
-        await query.edit_message_text("👇 **Step 1:** Ad ke liye Photo ya Video bhejein. HTML supported for texts.", reply_markup=cancel_keyboard())
+        await query.edit_message_text("👇 <b>Step 1:</b> Ad ke liye Photo ya Video bhejein. HTML supported for texts.", parse_mode="HTML", reply_markup=cancel_keyboard())
         return CONFIG_AD_MEDIA
     if cd == "change_delay":
-        await query.edit_message_text("Send new loop delay in seconds. Example: 30", reply_markup=cancel_keyboard())
+        await query.edit_message_text("Send new loop delay in seconds. Example: 30", parse_mode="HTML", reply_markup=cancel_keyboard())
         return CHANGE_DELAY
     if cd == "change_del_timer":
-        await query.edit_message_text("⏱ **Global Auto-Delete Timer**\n\nKitne seconds baad messages automatically delete hone chahiye? (e.g., 30)\n(0 bhejein agar disable karna hai):", reply_markup=cancel_keyboard())
+        await query.edit_message_text("⏱ <b>Global Auto-Delete Timer</b>\n\nKitne seconds baad messages automatically delete hone chahiye? (e.g., 30)\n(0 bhejein agar disable karna hai):", parse_mode="HTML", reply_markup=cancel_keyboard())
         return GLOBAL_CHANGE_DEL_TIMER
     if cd == "toggle_ads":
         if not data["configured"] or not has_ad_config(data):
-            await query.edit_message_text("Bot is not configured yet.", reply_markup=configure_keyboard())
+            await query.edit_message_text("Bot is not configured yet.", parse_mode="HTML", reply_markup=configure_keyboard())
             return ConversationHandler.END
         data["started"] = not data["started"]
         save_data(data)
         if not data["started"]:
             remove_ads_jobs(context)
-            await query.edit_message_text("Global Auto Broadcast stopped 🔴", reply_markup=admin_keyboard())
+            await query.edit_message_text("Global Auto Broadcast stopped 🔴", parse_mode="HTML", reply_markup=admin_keyboard())
         else:
-            await query.edit_message_text("Global Auto Broadcast started 🟢 (Looping at interval)")
+            await query.edit_message_text("Global Auto Broadcast started 🟢 (Looping at interval)", parse_mode="HTML")
             schedule_ads_job(context, first=0)
-            await query.message.reply_text("Auto broadcast has been triggered.", reply_markup=admin_keyboard())
+            await query.message.reply_text("Auto broadcast has been triggered.", parse_mode="HTML", reply_markup=admin_keyboard())
         return ConversationHandler.END
     if cd == "send_once":
         if not data["configured"] or not has_ad_config(data):
-            await query.edit_message_text("Bot is not configured yet.", reply_markup=configure_keyboard())
+            await query.edit_message_text("Bot is not configured yet.", parse_mode="HTML", reply_markup=configure_keyboard())
             return ConversationHandler.END
-        await query.edit_message_text("Sending Global Broadcast ONCE... (Includes all linked batches) 🚀")
+        await query.edit_message_text("Sending Global Broadcast ONCE... (Includes all linked batches) 🚀", parse_mode="HTML")
         sent, failed = await broadcast_ads(context)
-        await query.message.reply_text(f"One-Time Broadcast complete.\n✅ Sent: {sent}\n❌ Failed: {failed}", reply_markup=admin_keyboard())
+        await query.message.reply_text(f"One-Time Broadcast complete.\n✅ Sent: {sent}\n❌ Failed: {failed}", parse_mode="HTML", reply_markup=admin_keyboard())
         return ConversationHandler.END
     if cd == "change_ad":
-        await query.edit_message_text("👇 **Step 1:** Naye Global Ad ke liye Photo/Video bhejein.", reply_markup=cancel_keyboard())
+        await query.edit_message_text("👇 <b>Step 1:</b> Naye Global Ad ke liye Photo/Video bhejein.", parse_mode="HTML", reply_markup=cancel_keyboard())
         return CHANGE_AD_MEDIA
     if cd == "reconfig_buttons":
-        await query.edit_message_text("How many inline ad buttons? Send 0 to remove.", reply_markup=cancel_keyboard())
+        await query.edit_message_text("How many inline ad buttons? Send 0 to remove.", parse_mode="HTML", reply_markup=cancel_keyboard())
         return RECONFIG_BUTTON_COUNT
     if cd == "toggle_auto":
         data["auto_reply"] = not data["auto_reply"]
         save_data(data)
-        await query.edit_message_text("Auto Reply toggled.", reply_markup=admin_keyboard())
+        await query.edit_message_text("Auto Reply toggled.", parse_mode="HTML", reply_markup=admin_keyboard())
         return ConversationHandler.END
     if cd == "change_start":
-        await query.edit_message_text("Send new start message now (This is what normal users will see).", reply_markup=cancel_keyboard())
+        await query.edit_message_text("Send new start message now (This is what normal users will see).", parse_mode="HTML", reply_markup=cancel_keyboard())
         return CHANGE_START_MESSAGE
     if cd == "broadcast_users":
-        await query.edit_message_text(f"Send broadcast message now. It will be sent to {len(data.get('users', {}))} users.", reply_markup=cancel_keyboard())
+        await query.edit_message_text(f"Send broadcast message now. It will be sent to {len(data.get('users', {}))} users.", parse_mode="HTML", reply_markup=cancel_keyboard())
         return BROADCAST_MESSAGE
 
     return ConversationHandler.END
@@ -1445,10 +1439,10 @@ async def handle_ub_add_phone(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data["ub_client"] = client
         context.user_data["ub_phone"] = phone
         context.user_data["ub_phone_code_hash"] = sent_code.phone_code_hash
-        await msg.edit_text("✅ Code sent! Please reply with the login code (e.g. 12345).", reply_markup=cancel_keyboard())
+        await msg.edit_text("✅ Code sent! Please reply with the login code (e.g. 12345).", parse_mode="HTML", reply_markup=cancel_keyboard())
         return UB_ADD_CODE
     except Exception as e:
-        await msg.edit_text(f"❌ Error: {e}", reply_markup=cancel_keyboard())
+        await msg.edit_text(f"❌ Error: {e}", parse_mode="HTML", reply_markup=cancel_keyboard())
         await client.disconnect()
         return ConversationHandler.END
 
@@ -1462,13 +1456,13 @@ async def handle_ub_add_code(update: Update, context: ContextTypes.DEFAULT_TYPE)
         session_str = await client.export_session_string()
         await client.disconnect()
         _save_userbot(session_str, alias=phone)
-        await update.effective_message.reply_text("✅ Logged in successfully!", reply_markup=userbots_keyboard())
+        await update.effective_message.reply_text("✅ Logged in successfully!", parse_mode="HTML", reply_markup=userbots_keyboard())
         return ConversationHandler.END
     except SessionPasswordNeeded:
-        await update.effective_message.reply_text("🔐 2FA is required. Send your password:", reply_markup=cancel_keyboard())
+        await update.effective_message.reply_text("🔐 2FA is required. Send your password:", parse_mode="HTML", reply_markup=cancel_keyboard())
         return UB_ADD_2FA
     except Exception as e:
-        await update.effective_message.reply_text(f"❌ Error: {e}", reply_markup=cancel_keyboard())
+        await update.effective_message.reply_text(f"❌ Error: {e}", parse_mode="HTML", reply_markup=cancel_keyboard())
         await client.disconnect()
         return ConversationHandler.END
 
@@ -1480,10 +1474,10 @@ async def handle_ub_add_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session_str = await client.export_session_string()
         await client.disconnect()
         _save_userbot(session_str, alias=context.user_data.get("ub_phone"))
-        await update.effective_message.reply_text("✅ Logged in successfully with 2FA!", reply_markup=userbots_keyboard())
+        await update.effective_message.reply_text("✅ Logged in successfully with 2FA!", parse_mode="HTML", reply_markup=userbots_keyboard())
         return ConversationHandler.END
     except Exception as e:
-        await update.effective_message.reply_text(f"❌ Error: {e}", reply_markup=cancel_keyboard())
+        await update.effective_message.reply_text(f"❌ Error: {e}", parse_mode="HTML", reply_markup=cancel_keyboard())
         await client.disconnect()
         return ConversationHandler.END
 
@@ -1495,9 +1489,9 @@ async def handle_ub_add_string(update: Update, context: ContextTypes.DEFAULT_TYP
         me = await client.get_me()
         await client.disconnect()
         _save_userbot(session_str, alias=me.first_name or "Imported Account")
-        await update.effective_message.reply_text("✅ Session string imported successfully!", reply_markup=userbots_keyboard())
+        await update.effective_message.reply_text("✅ Session string imported successfully!", parse_mode="HTML", reply_markup=userbots_keyboard())
     except Exception as e:
-        await update.effective_message.reply_text(f"❌ Invalid session string: {e}", reply_markup=cancel_keyboard())
+        await update.effective_message.reply_text(f"❌ Invalid session string: {e}", parse_mode="HTML", reply_markup=cancel_keyboard())
     return ConversationHandler.END
 
 async def handle_ub_add_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1516,13 +1510,13 @@ async def handle_ub_add_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE)
             success += 1
         except Exception:
             failed += 1
-    await msg.edit_text(f"✅ Bulk Import Complete.\n\n🟢 Success: {success}\n🔴 Failed: {failed}", reply_markup=userbots_keyboard())
+    await msg.edit_text(f"✅ Bulk Import Complete.\n\n🟢 Success: {success}\n🔴 Failed: {failed}", parse_mode="HTML", reply_markup=userbots_keyboard())
     return ConversationHandler.END
 
 async def handle_ub_add_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.effective_message.document
     if not doc or not doc.file_name.endswith(".session"):
-        await update.effective_message.reply_text("❌ Please upload a valid .session file.", reply_markup=cancel_keyboard())
+        await update.effective_message.reply_text("❌ Please upload a valid .session file.", parse_mode="HTML", reply_markup=cancel_keyboard())
         return UB_ADD_FILE
     
     file = await context.bot.get_file(doc.file_id)
@@ -1534,9 +1528,9 @@ async def handle_ub_add_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         session_str = await client.export_session_string()
         await client.disconnect()
         _save_userbot(session_str, alias=doc.file_name)
-        await update.effective_message.reply_text("✅ Session file loaded and imported successfully!", reply_markup=userbots_keyboard())
+        await update.effective_message.reply_text("✅ Session file loaded and imported successfully!", parse_mode="HTML", reply_markup=userbots_keyboard())
     except Exception as e:
-        await update.effective_message.reply_text(f"❌ Error loading file: {e}", reply_markup=cancel_keyboard())
+        await update.effective_message.reply_text(f"❌ Error loading file: {e}", parse_mode="HTML", reply_markup=cancel_keyboard())
     finally:
         if os.path.exists(path): os.remove(path)
     return ConversationHandler.END
@@ -1548,14 +1542,14 @@ async def handle_ub_rename(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ub_id in data["userbots"]:
         data["userbots"][ub_id]["alias"] = new_alias
         save_data(data)
-    await update.effective_message.reply_text("✅ Alias updated!", reply_markup=userbot_single_keyboard(ub_id))
+    await update.effective_message.reply_text("✅ Alias updated!", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
     return ConversationHandler.END
 
 # --- Sub-Bots Addition ---
 async def handle_sb_add_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     token = update.effective_message.text.strip()
     context.user_data['temp_bot_token'] = token
-    await update.effective_message.reply_text("✍️ Send a short identifying name for this bot:", reply_markup=cancel_keyboard())
+    await update.effective_message.reply_text("✍️ Send a short identifying name for this bot:", parse_mode="HTML", reply_markup=cancel_keyboard())
     return SB_ADD_NAME
 
 async def handle_sb_add_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1568,7 +1562,7 @@ async def handle_sb_add_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Start the Pyrogram listener immediately for the new sub-bot
     asyncio.create_task(start_subbot_listener(token, name))
     
-    await update.effective_message.reply_text("✅ Sub-bot added successfully! The bot is now actively listening for new groups.", reply_markup=subbots_keyboard())
+    await update.effective_message.reply_text("✅ Sub-bot added successfully! The bot is now actively listening for new groups.", parse_mode="HTML", reply_markup=subbots_keyboard())
     return ConversationHandler.END
 
 # --- Wait Input Handler (For Batch Creation) ---
@@ -1582,16 +1576,16 @@ async def handle_wait_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raw_bname = msg.text.strip()[:15]
         bname = re.sub(r'[^a-zA-Z0-9]', '', raw_bname) 
         if not bname:
-            await msg.reply_text("❌ Batch name cannot be empty or only special characters. Try again:", reply_markup=cancel_keyboard())
+            await msg.reply_text("❌ Batch name cannot be empty or only special characters. Try again:", parse_mode="HTML", reply_markup=cancel_keyboard())
             return WAIT_INPUT
             
         data = load_data()
         if bname not in data["batches"]:
             data["batches"][bname] = {"groups": [], "msg_chat_id": None, "msg_id": None, "buttons": [], "settings": {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False}, "stats": {"sent": 0, "failed": 0}, "assigned_bot": None}
             save_data(data)
-            await msg.reply_text(f"✅ Batch '{bname}' created!", reply_markup=build_batches_keyboard(0))
+            await msg.reply_text(f"✅ Batch '{bname}' created!", parse_mode="HTML", reply_markup=build_batches_keyboard(0))
         else:
-            await msg.reply_text("❌ Batch already exists!", reply_markup=build_batches_keyboard(0))
+            await msg.reply_text("❌ Batch already exists!", parse_mode="HTML", reply_markup=build_batches_keyboard(0))
     return ConversationHandler.END
 
 # --- Custom Message Deletion Handler (N Messages) ---
@@ -1602,7 +1596,7 @@ async def receive_batch_delete_n(update: Update, context: ContextTypes.DEFAULT_T
     data = load_data()
     bdata = data.get("batches", {}).get(bname)
     if not bdata:
-        await update.effective_message.reply_text("❌ Batch not found.", reply_markup=cancel_keyboard())
+        await update.effective_message.reply_text("❌ Batch not found.", parse_mode="HTML", reply_markup=cancel_keyboard())
         return ConversationHandler.END
     
     assigned_bot = bdata.get("assigned_bot")
@@ -1632,7 +1626,7 @@ async def receive_batch_delete_n(update: Update, context: ContextTypes.DEFAULT_T
         del_c, fail_c = await run_delete(context.bot)
         
     save_data(data)
-    await msg_reply.edit_text(f"✅ Bulk Deletion complete for batch '{bname}'.\n\n🗑️ Successfully Deleted: {del_c}\n❌ Failed/Missing: {fail_c}", reply_markup=build_single_batch_keyboard(bname))
+    await msg_reply.edit_text(f"✅ Bulk Deletion complete for batch '{bname}'.\n\n🗑️ Successfully Deleted: {del_c}\n❌ Failed/Missing: {fail_c}", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
     return ConversationHandler.END
 
 # --- Message Configs & State Builders ---
@@ -1645,10 +1639,10 @@ async def saved_ad_receive_media(update: Update, context: ContextTypes.DEFAULT_T
         data["saved_ads"][slot]["chat_id"] = msg.chat_id
         data["saved_ads"][slot]["msg_id"] = msg.message_id
         save_data(data)
-        await msg.reply_text(f"✅ Text Content saved for Slot {slot}!\n\n👇 **Step 3:** How many inline buttons do you want? (0-20)", reply_markup=cancel_keyboard())
+        await msg.reply_text(f"✅ Text Content saved for Slot {slot}!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
         return SAVED_AD_BTN_COUNT
     else:
-        await msg.reply_text("👇 **Step 2:** Ab is Photo/Video ka Text (Caption) bhejein. (Agar caption nahi rakhna to '/skip' likhein).", reply_markup=cancel_keyboard())
+        await msg.reply_text("👇 <b>Step 2:</b> Ab is Photo/Video ka Text (Caption) bhejein. (Agar caption nahi rakhna to '/skip' likhein).", parse_mode="HTML", reply_markup=cancel_keyboard())
         return SAVED_AD_TEXT
 
 async def saved_ad_receive_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1660,7 +1654,7 @@ async def saved_ad_receive_text(update: Update, context: ContextTypes.DEFAULT_TY
     data["saved_ads"][slot]["chat_id"] = sent.chat_id
     data["saved_ads"][slot]["msg_id"] = sent.message_id
     save_data(data)
-    await text_msg.reply_text(f"✅ Media + Caption saved for Slot {slot}!\n\n👇 **Step 3:** How many inline buttons do you want? (0-20)", reply_markup=cancel_keyboard())
+    await text_msg.reply_text(f"✅ Media + Caption saved for Slot {slot}!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
     return SAVED_AD_BTN_COUNT
 
 async def saved_ad_receive_btn_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1675,16 +1669,16 @@ async def saved_ad_receive_btn_count(update: Update, context: ContextTypes.DEFAU
         data = load_data()
         data["saved_ads"][slot]["buttons"] = []
         save_data(data)
-        await msg.reply_text(f"✅ Saved Ad Slot {slot} configured completely!", reply_markup=saved_ads_keyboard())
+        await msg.reply_text(f"✅ Saved Ad Slot {slot} configured completely!", parse_mode="HTML", reply_markup=saved_ads_keyboard())
         return ConversationHandler.END
-    await msg.reply_text("Send button 1 name.", reply_markup=cancel_keyboard())
+    await msg.reply_text("Send button 1 name.", parse_mode="HTML", reply_markup=cancel_keyboard())
     return SAVED_AD_BTN_NAME
 
 async def saved_ad_receive_btn_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_message.text.strip()
     if not name: return SAVED_AD_BTN_NAME
     context.user_data["saved_ad_current_btn_name"] = name
-    await update.effective_message.reply_text(f"Send button {context.user_data['saved_ad_current_button']} link.", reply_markup=cancel_keyboard())
+    await update.effective_message.reply_text(f"Send button {context.user_data['saved_ad_current_button']} link.", parse_mode="HTML", reply_markup=cancel_keyboard())
     return SAVED_AD_BTN_LINK
 
 async def saved_ad_receive_btn_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1692,7 +1686,7 @@ async def saved_ad_receive_btn_link(update: Update, context: ContextTypes.DEFAUL
     url = msg.text.strip()
     if not url: return SAVED_AD_BTN_LINK
     context.user_data["saved_ad_current_btn_url"] = url
-    await msg.reply_text("Choose Button Color:", reply_markup=color_selection_keyboard())
+    await msg.reply_text("Choose Button Color:", parse_mode="HTML", reply_markup=color_selection_keyboard())
     return SAVED_AD_BTN_COLOR
 
 async def saved_ad_receive_btn_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1707,10 +1701,10 @@ async def saved_ad_receive_btn_color(update: Update, context: ContextTypes.DEFAU
         data = load_data()
         data["saved_ads"][slot]["buttons"] = context.user_data["saved_ad_buttons"]
         save_data(data)
-        await query.edit_message_text(f"✅ Saved Ad Slot {slot} configured completely!", reply_markup=saved_ads_keyboard())
+        await query.edit_message_text(f"✅ Saved Ad Slot {slot} configured completely!", parse_mode="HTML", reply_markup=saved_ads_keyboard())
         return ConversationHandler.END
     context.user_data["saved_ad_current_button"] += 1
-    await query.edit_message_text(f"Send button {context.user_data['saved_ad_current_button']} name.", reply_markup=cancel_keyboard())
+    await query.edit_message_text(f"Send button {context.user_data['saved_ad_current_button']} name.", parse_mode="HTML", reply_markup=cancel_keyboard())
     return SAVED_AD_BTN_NAME
 
 async def receive_batch_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1721,7 +1715,7 @@ async def receive_batch_delay(update: Update, context: ContextTypes.DEFAULT_TYPE
     data["batches"][bname]["settings"]["delay"] = delay
     save_data(data)
     if data["batches"][bname]["settings"]["auto_broadcast"]: manage_batch_job(context, bname, True)
-    await update.effective_message.reply_text(f"Delay for {bname} updated ✅", reply_markup=build_single_batch_keyboard(bname))
+    await update.effective_message.reply_text(f"Delay for {bname} updated ✅", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
     return ConversationHandler.END
 
 async def receive_batch_tog_del_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1732,7 +1726,7 @@ async def receive_batch_tog_del_timer(update: Update, context: ContextTypes.DEFA
     data["batches"][bname]["settings"]["auto_delete"] = True
     data["batches"][bname]["settings"]["delete_timer"] = max(0, timer)
     save_data(data)
-    await update.effective_message.reply_text(f"Auto-Delete Set to {timer}s ✅", reply_markup=build_single_batch_keyboard(bname))
+    await update.effective_message.reply_text(f"Auto-Delete Set to {timer}s ✅", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
     return ConversationHandler.END
 
 async def batch_config_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1744,10 +1738,10 @@ async def batch_config_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         data["batches"][bname]["msg_chat_id"] = msg.chat_id
         data["batches"][bname]["msg_id"] = msg.message_id
         save_data(data)
-        await msg.reply_text("✅ आपका मैसेज सेव हो चुका है!\n\n👇 **Step 3:** How many inline buttons do you want? (0-20)", reply_markup=cancel_keyboard())
+        await msg.reply_text("✅ आपका मैसेज सेव हो चुका है!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
         return BATCH_CONFIG_BTN_COUNT
     else:
-        await msg.reply_text("👇 **Step 2:** Ab is Photo/Video ka Text (Caption) bhejein. (Agar caption nahi rakhna to '/skip' likhein).", reply_markup=cancel_keyboard())
+        await msg.reply_text("👇 <b>Step 2:</b> Ab is Photo/Video ka Text (Caption) bhejein. (Agar caption nahi rakhna to '/skip' likhein).", parse_mode="HTML", reply_markup=cancel_keyboard())
         return BATCH_CONFIG_TEXT
 
 async def batch_config_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1759,7 +1753,7 @@ async def batch_config_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["batches"][bname]["msg_chat_id"] = sent.chat_id
     data["batches"][bname]["msg_id"] = sent.message_id
     save_data(data)
-    await text_msg.reply_text("✅ आपका मैसेज सेव हो चुका है!\n\n👇 **Step 3:** How many inline buttons do you want? (0-20)", reply_markup=cancel_keyboard())
+    await text_msg.reply_text("✅ आपका मैसेज सेव हो चुका है!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
     return BATCH_CONFIG_BTN_COUNT
 
 async def batch_config_btn_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1774,16 +1768,16 @@ async def batch_config_btn_count(update: Update, context: ContextTypes.DEFAULT_T
         data = load_data()
         data["batches"][bname]["buttons"] = []
         save_data(data)
-        await msg.reply_text("⏱ **Step 4:** Kitne seconds baad message auto-delete karna hai? (0 to keep permanent).", reply_markup=cancel_keyboard())
+        await msg.reply_text("⏱ <b>Step 4:</b> Kitne seconds baad message auto-delete karna hai? (0 to keep permanent).", parse_mode="HTML", reply_markup=cancel_keyboard())
         return BATCH_CONFIG_DELETE_TIMER
-    await msg.reply_text("Send button 1 name.", reply_markup=cancel_keyboard())
+    await msg.reply_text("Send button 1 name.", parse_mode="HTML", reply_markup=cancel_keyboard())
     return BATCH_CONFIG_BTN_NAME
 
 async def batch_config_btn_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_message.text.strip()
     if not name: return BATCH_CONFIG_BTN_NAME
     context.user_data["batch_current_btn_name"] = name
-    await update.effective_message.reply_text(f"Send button {context.user_data['batch_current_button']} link.", reply_markup=cancel_keyboard())
+    await update.effective_message.reply_text(f"Send button {context.user_data['batch_current_button']} link.", parse_mode="HTML", reply_markup=cancel_keyboard())
     return BATCH_CONFIG_BTN_LINK
 
 async def batch_config_btn_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1791,7 +1785,7 @@ async def batch_config_btn_link(update: Update, context: ContextTypes.DEFAULT_TY
     url = msg.text.strip()
     if not url: return BATCH_CONFIG_BTN_LINK
     context.user_data["batch_current_btn_url"] = url
-    await msg.reply_text("Choose Button Color:", reply_markup=color_selection_keyboard())
+    await msg.reply_text("Choose Button Color:", parse_mode="HTML", reply_markup=color_selection_keyboard())
     return BATCH_CONFIG_BTN_COLOR
 
 async def batch_config_btn_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1806,10 +1800,10 @@ async def batch_config_btn_color(update: Update, context: ContextTypes.DEFAULT_T
         data = load_data()
         data["batches"][bname]["buttons"] = context.user_data["batch_buttons"]
         save_data(data)
-        await query.edit_message_text("✅ Batch Buttons saved!\n\n⏱ **Step 4:** Kitne seconds baad message auto-delete karna hai? (0 to keep permanent).", reply_markup=cancel_keyboard())
+        await query.edit_message_text("✅ Batch Buttons saved!\n\n⏱ <b>Step 4:</b> Kitne seconds baad message auto-delete karna hai? (0 to keep permanent).", parse_mode="HTML", reply_markup=cancel_keyboard())
         return BATCH_CONFIG_DELETE_TIMER
     context.user_data["batch_current_button"] += 1
-    await query.edit_message_text(f"Send button {context.user_data['batch_current_button']} name.", reply_markup=cancel_keyboard())
+    await query.edit_message_text(f"Send button {context.user_data['batch_current_button']} name.", parse_mode="HTML", reply_markup=cancel_keyboard())
     return BATCH_CONFIG_BTN_NAME
 
 async def batch_config_receive_delete_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1819,7 +1813,7 @@ async def batch_config_receive_delete_timer(update: Update, context: ContextType
     data = load_data()
     data["batches"][bname]["settings"]["delete_timer"] = max(0, timer)
     save_data(data)
-    await update.effective_message.reply_text("✅ Batch configuration complete!", reply_markup=build_single_batch_keyboard(bname))
+    await update.effective_message.reply_text("✅ Batch configuration complete!", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
     return ConversationHandler.END
 
 async def config_receive_ad_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1830,10 +1824,10 @@ async def config_receive_ad_media(update: Update, context: ContextTypes.DEFAULT_
         data["ad_source_chat_id"] = msg.chat_id
         data["ad_message_id"] = msg.message_id
         save_data(data)
-        await msg.reply_text("✅ आपका मैसेज सेव हो चुका है!\n\n👇 **Step 3:** How many inline buttons do you want? (0-20)", reply_markup=cancel_keyboard())
+        await msg.reply_text("✅ आपका मैसेज सेव हो चुका है!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
         return CONFIG_BUTTON_COUNT
     else:
-        await msg.reply_text("👇 **Step 2:** Ab is Photo/Video ka Text (Caption) bhejein. (Agar caption nahi rakhna to '/skip' likhein).", reply_markup=cancel_keyboard())
+        await msg.reply_text("👇 <b>Step 2:</b> Ab is Photo/Video ka Text (Caption) bhejein. (Agar caption nahi rakhna to '/skip' likhein).", parse_mode="HTML", reply_markup=cancel_keyboard())
         return CONFIG_AD_TEXT
 
 async def config_receive_ad_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1844,7 +1838,7 @@ async def config_receive_ad_text(update: Update, context: ContextTypes.DEFAULT_T
     data["ad_source_chat_id"] = sent.chat_id
     data["ad_message_id"] = sent.message_id
     save_data(data)
-    await text_msg.reply_text("✅ आपका मैसेज सेव हो चुका है!\n\n👇 **Step 3:** How many inline buttons do you want? (0-20)", reply_markup=cancel_keyboard())
+    await text_msg.reply_text("✅ आपका मैसेज सेव हो चुका है!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
     return CONFIG_BUTTON_COUNT
 
 async def config_receive_button_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1858,16 +1852,16 @@ async def config_receive_button_count(update: Update, context: ContextTypes.DEFA
         data = load_data()
         data["buttons"] = []
         save_data(data)
-        await msg.reply_text("⏱ **Step 4:** Kitne seconds baad message auto-delete karna hai? (0 to keep permanent).", reply_markup=cancel_keyboard())
+        await msg.reply_text("⏱ <b>Step 4:</b> Kitne seconds baad message auto-delete karna hai? (0 to keep permanent).", parse_mode="HTML", reply_markup=cancel_keyboard())
         return CONFIG_DELETE_TIMER
-    await msg.reply_text("Send button 1 name.", reply_markup=cancel_keyboard())
+    await msg.reply_text("Send button 1 name.", parse_mode="HTML", reply_markup=cancel_keyboard())
     return CONFIG_BUTTON_NAME
 
 async def config_receive_button_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_message.text.strip()
     if not name: return CONFIG_BUTTON_NAME
     context.user_data["current_button_name"] = name
-    await update.effective_message.reply_text(f"Send button {context.user_data['current_button']} link.", reply_markup=cancel_keyboard())
+    await update.effective_message.reply_text(f"Send button {context.user_data['current_button']} link.", parse_mode="HTML", reply_markup=cancel_keyboard())
     return CONFIG_BUTTON_LINK
 
 async def config_receive_button_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1875,7 +1869,7 @@ async def config_receive_button_link(update: Update, context: ContextTypes.DEFAU
     url = msg.text.strip()
     if not url: return CONFIG_BUTTON_LINK
     context.user_data["current_button_url"] = url
-    await msg.reply_text("Choose Button Color:", reply_markup=color_selection_keyboard())
+    await msg.reply_text("Choose Button Color:", parse_mode="HTML", reply_markup=color_selection_keyboard())
     return CONFIG_BUTTON_COLOR
 
 async def config_receive_button_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1889,10 +1883,10 @@ async def config_receive_button_color(update: Update, context: ContextTypes.DEFA
         data = load_data()
         data["buttons"] = context.user_data["buttons"]
         save_data(data)
-        await query.edit_message_text("✅ Buttons saved!\n\n⏱ **Step 4:** Kitne seconds baad message auto-delete karna hai? (0 to keep permanent).", reply_markup=cancel_keyboard())
+        await query.edit_message_text("✅ Buttons saved!\n\n⏱ <b>Step 4:</b> Kitne seconds baad message auto-delete karna hai? (0 to keep permanent).", parse_mode="HTML", reply_markup=cancel_keyboard())
         return CONFIG_DELETE_TIMER
     context.user_data["current_button"] += 1
-    await query.edit_message_text(f"Send button {context.user_data['current_button']} name.", reply_markup=cancel_keyboard())
+    await query.edit_message_text(f"Send button {context.user_data['current_button']} name.", parse_mode="HTML", reply_markup=cancel_keyboard())
     return CONFIG_BUTTON_NAME
 
 async def config_receive_delete_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1901,7 +1895,7 @@ async def config_receive_delete_timer(update: Update, context: ContextTypes.DEFA
     data = load_data()
     data["delete_timer"] = max(0, timer)
     save_data(data)
-    await update.effective_message.reply_text("✅ Delete Timer saved!\n\n🔄 **Step 5:** Send Loop Broadcast Delay in seconds (e.g., 30).", reply_markup=cancel_keyboard())
+    await update.effective_message.reply_text("✅ Delete Timer saved!\n\n🔄 <b>Step 5:</b> Send Loop Broadcast Delay in seconds (e.g., 30).", parse_mode="HTML", reply_markup=cancel_keyboard())
     return CONFIG_DELAY
 
 async def config_receive_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1911,7 +1905,7 @@ async def config_receive_delay(update: Update, context: ContextTypes.DEFAULT_TYP
     data["delay"] = delay
     data["configured"] = True
     save_data(data)
-    await update.effective_message.reply_text("✅ Configuration complete!\n\nAdmin Menu 👑", reply_markup=admin_keyboard())
+    await update.effective_message.reply_text("✅ Configuration complete!\n\nAdmin Menu 👑", parse_mode="HTML", reply_markup=admin_keyboard())
     return ConversationHandler.END
 
 async def receive_change_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1921,7 +1915,7 @@ async def receive_change_delay(update: Update, context: ContextTypes.DEFAULT_TYP
     data["delay"] = delay
     save_data(data)
     if data.get("started"): schedule_ads_job(context)
-    await update.effective_message.reply_text("✅ Delay changed!", reply_markup=admin_keyboard())
+    await update.effective_message.reply_text("✅ Delay changed!", parse_mode="HTML", reply_markup=admin_keyboard())
     return ConversationHandler.END
 
 async def receive_global_change_del_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1930,7 +1924,7 @@ async def receive_global_change_del_timer(update: Update, context: ContextTypes.
     data = load_data()
     data["delete_timer"] = max(0, timer)
     save_data(data)
-    await update.effective_message.reply_text(f"✅ Global Delete Timer Set to {timer}s!", reply_markup=admin_keyboard())
+    await update.effective_message.reply_text(f"✅ Global Delete Timer Set to {timer}s!", parse_mode="HTML", reply_markup=admin_keyboard())
     return ConversationHandler.END
 
 async def receive_change_ad_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1942,10 +1936,10 @@ async def receive_change_ad_media(update: Update, context: ContextTypes.DEFAULT_
         data["ad_message_id"] = msg.message_id
         data["configured"] = True
         save_data(data)
-        await msg.reply_text("✅ आपका मैसेज सेव हो चुका है!", reply_markup=admin_keyboard())
+        await msg.reply_text("✅ आपका मैसेज सेव हो चुका है!", parse_mode="HTML", reply_markup=admin_keyboard())
         return ConversationHandler.END
     else:
-        await msg.reply_text("👇 **Step 2:** Ab is Photo/Video ka Text (Caption) bhejein. (Agar caption nahi rakhna to '/skip' likhein).", reply_markup=cancel_keyboard())
+        await msg.reply_text("👇 <b>Step 2:</b> Ab is Photo/Video ka Text (Caption) bhejein. (Agar caption nahi rakhna to '/skip' likhein).", parse_mode="HTML", reply_markup=cancel_keyboard())
         return CHANGE_AD_TEXT
 
 async def receive_change_ad_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1957,7 +1951,7 @@ async def receive_change_ad_text(update: Update, context: ContextTypes.DEFAULT_T
     data["ad_message_id"] = sent.message_id
     data["configured"] = True
     save_data(data)
-    await text_msg.reply_text("✅ आपका मैसेज सेव हो चुका है!", reply_markup=admin_keyboard())
+    await text_msg.reply_text("✅ आपका मैसेज सेव हो चुका है!", parse_mode="HTML", reply_markup=admin_keyboard())
     return ConversationHandler.END
 
 async def reconfig_receive_button_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1971,21 +1965,21 @@ async def reconfig_receive_button_count(update: Update, context: ContextTypes.DE
         data = load_data()
         data["buttons"] = []
         save_data(data)
-        await msg.reply_text("✅ Buttons removed!", reply_markup=admin_keyboard())
+        await msg.reply_text("✅ Buttons removed!", parse_mode="HTML", reply_markup=admin_keyboard())
         return ConversationHandler.END
-    await msg.reply_text("Send button 1 name.", reply_markup=cancel_keyboard())
+    await msg.reply_text("Send button 1 name.", parse_mode="HTML", reply_markup=cancel_keyboard())
     return RECONFIG_BUTTON_NAME
 
 async def reconfig_receive_button_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["current_button_name"] = update.effective_message.text.strip()
-    await update.effective_message.reply_text(f"Send button {context.user_data['current_button']} link.", reply_markup=cancel_keyboard())
+    await update.effective_message.reply_text(f"Send button {context.user_data['current_button']} link.", parse_mode="HTML", reply_markup=cancel_keyboard())
     return RECONFIG_BUTTON_LINK
 
 async def reconfig_receive_button_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.effective_message.text.strip()
     if not url: return RECONFIG_BUTTON_LINK
     context.user_data["current_button_url"] = url
-    await update.effective_message.reply_text("Choose Button Color:", reply_markup=color_selection_keyboard())
+    await update.effective_message.reply_text("Choose Button Color:", parse_mode="HTML", reply_markup=color_selection_keyboard())
     return RECONFIG_BUTTON_COLOR
 
 async def reconfig_receive_button_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1999,10 +1993,10 @@ async def reconfig_receive_button_color(update: Update, context: ContextTypes.DE
         data = load_data()
         data["buttons"] = context.user_data["buttons"]
         save_data(data)
-        await query.edit_message_text("✅ Ad buttons reconfigured!", reply_markup=admin_keyboard())
+        await query.edit_message_text("✅ Ad buttons reconfigured!", parse_mode="HTML", reply_markup=admin_keyboard())
         return ConversationHandler.END
     context.user_data["current_button"] += 1
-    await query.edit_message_text(f"Send button {context.user_data['current_button']} name.", reply_markup=cancel_keyboard())
+    await query.edit_message_text(f"Send button {context.user_data['current_button']} name.", parse_mode="HTML", reply_markup=cancel_keyboard())
     return RECONFIG_BUTTON_NAME
 
 async def receive_change_start_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2010,7 +2004,7 @@ async def receive_change_start_message(update: Update, context: ContextTypes.DEF
     data["start_source_chat_id"] = update.effective_message.chat_id
     data["start_message_id"] = update.effective_message.message_id
     save_data(data)
-    await update.effective_message.reply_text("✅ Start message saved!\nButtons count? (0 for none)", reply_markup=cancel_keyboard())
+    await update.effective_message.reply_text("✅ Start message saved!\nButtons count? (0 for none)", parse_mode="HTML", reply_markup=cancel_keyboard())
     return START_BUTTON_COUNT
 
 async def start_receive_button_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2024,21 +2018,21 @@ async def start_receive_button_count(update: Update, context: ContextTypes.DEFAU
         data = load_data()
         data["start_buttons"] = []
         save_data(data)
-        await msg.reply_text("✅ Start message configured!", reply_markup=admin_keyboard())
+        await msg.reply_text("✅ Start message configured!", parse_mode="HTML", reply_markup=admin_keyboard())
         return ConversationHandler.END
-    await msg.reply_text("Send start button 1 name.", reply_markup=cancel_keyboard())
+    await msg.reply_text("Send start button 1 name.", parse_mode="HTML", reply_markup=cancel_keyboard())
     return START_BUTTON_NAME
 
 async def start_receive_button_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["current_start_button_name"] = update.effective_message.text.strip()
-    await update.effective_message.reply_text(f"Send button {context.user_data['current_start_button']} link.", reply_markup=cancel_keyboard())
+    await update.effective_message.reply_text(f"Send button {context.user_data['current_start_button']} link.", parse_mode="HTML", reply_markup=cancel_keyboard())
     return START_BUTTON_LINK
 
 async def start_receive_button_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.effective_message.text.strip()
     if not url: return START_BUTTON_LINK
     context.user_data["current_start_button_url"] = url
-    await update.effective_message.reply_text("Choose Button Color:", reply_markup=color_selection_keyboard())
+    await update.effective_message.reply_text("Choose Button Color:", parse_mode="HTML", reply_markup=color_selection_keyboard())
     return START_BUTTON_COLOR
 
 async def start_receive_button_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2052,10 +2046,10 @@ async def start_receive_button_color(update: Update, context: ContextTypes.DEFAU
         data = load_data()
         data["start_buttons"] = context.user_data["start_buttons"]
         save_data(data)
-        await query.edit_message_text("✅ Start message and buttons configured!", reply_markup=admin_keyboard())
+        await query.edit_message_text("✅ Start message and buttons configured!", parse_mode="HTML", reply_markup=admin_keyboard())
         return ConversationHandler.END
     context.user_data["current_start_button"] += 1
-    await query.edit_message_text(f"Send button {context.user_data['current_start_button']} name.", reply_markup=cancel_keyboard())
+    await query.edit_message_text(f"Send button {context.user_data['current_start_button']} name.", parse_mode="HTML", reply_markup=cancel_keyboard())
     return START_BUTTON_NAME
 
 async def receive_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2069,13 +2063,13 @@ async def receive_broadcast_confirm(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     await query.answer()
     if query.data == "cancel_broadcast":
-        await query.edit_message_text("Cancelled.", reply_markup=admin_keyboard())
+        await query.edit_message_text("Cancelled.", parse_mode="HTML", reply_markup=admin_keyboard())
         return ConversationHandler.END
     if query.data != "confirm_broadcast": return BROADCAST_CONFIRM
 
     chat_id = context.user_data.get("broadcast_source_chat_id")
     msg_id = context.user_data.get("broadcast_message_id")
-    await query.edit_message_text("Broadcast started 📢")
+    await query.edit_message_text("Broadcast started 📢", parse_mode="HTML")
     users = list(load_data().get("users", {}).keys())
     sent, failed = 0, 0
     for u in users:
@@ -2084,12 +2078,12 @@ async def receive_broadcast_confirm(update: Update, context: ContextTypes.DEFAUL
             sent += 1
         except: failed += 1
         await asyncio.sleep(0.05)
-    await query.message.reply_text(f"Broadcast complete ✅\nSent: {sent}\nFailed: {failed}", reply_markup=admin_keyboard())
+    await query.message.reply_text(f"Broadcast complete ✅\nSent: {sent}\nFailed: {failed}", parse_mode="HTML", reply_markup=admin_keyboard())
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update.effective_user.id): return ConversationHandler.END
-    await update.effective_message.reply_text("Cancelled.", reply_markup=admin_keyboard())
+    await update.effective_message.reply_text("Cancelled.", parse_mode="HTML", reply_markup=admin_keyboard())
     return ConversationHandler.END
 
 # --- Group Events & Analytics Tracking ---
