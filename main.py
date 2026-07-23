@@ -1085,7 +1085,7 @@ async def run_userbot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         client = Client(name=ub_id, session_string=session_str, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         await client.connect()
         me = await client.get_me()
-        my_id = me.id
+        my_id = me.id if me and hasattr(me, 'id') else "me"
         admin_groups = []
         
         # UPGRADED: DEEP SAFE CHECK WITH ID FIX
@@ -1094,7 +1094,7 @@ async def run_userbot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 if not dialog or not dialog.chat: continue
                 chat = dialog.chat
                 
-                if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+                if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]:
                     try:
                         member = await client.get_chat_member(chat.id, my_id)
                     except Exception:
@@ -1126,7 +1126,7 @@ async def run_userbot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         admin_groups.sort(key=lambda x: x["members"], reverse=True)
         highest = admin_groups[0]
         
-        text = f"📊 <b>Account Stats for {alias}</b>\n\n👑 <b>Total Groups (Admin/Owner):</b> {len(admin_groups)}\n"
+        text = f"📊 <b>Account Stats for {alias}</b>\n\n👑 <b>Total Groups/Channels (Admin/Owner):</b> {len(admin_groups)}\n"
         text += f"📈 <b>Highest Members:</b> {highest['title']} ({highest['members']} Members)\n\n<b>Detailed List:</b>\n"
         for g in admin_groups: text += f"- {g['title']} | Members: {g['members']} | Role: {g['role']}\n"
         
@@ -1146,7 +1146,7 @@ async def run_check_owner_admin(update: Update, context: ContextTypes.DEFAULT_TY
         client = Client(name=ub_id, session_string=session_str, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         await client.connect()
         me = await client.get_me()
-        my_id = me.id
+        my_id = me.id if me and hasattr(me, 'id') else "me"
         owner_groups = []
         admin_groups = []
         
@@ -1156,7 +1156,7 @@ async def run_check_owner_admin(update: Update, context: ContextTypes.DEFAULT_TY
                 if not dialog or not dialog.chat: continue
                 chat = dialog.chat
                 
-                if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+                if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]:
                     try:
                         member = await client.get_chat_member(chat.id, my_id)
                     except Exception:
@@ -1180,9 +1180,9 @@ async def run_check_owner_admin(update: Update, context: ContextTypes.DEFAULT_TY
         await client.disconnect()
         
         full_text = f"👑 <b>Ownership & Admin Status for:</b> {alias}\n\n"
-        full_text += f"👤 <b>Owned Groups ({len(owner_groups)}):</b>\n"
+        full_text += f"👤 <b>Owned Groups/Channels ({len(owner_groups)}):</b>\n"
         full_text += "\n".join(owner_groups) if owner_groups else "None"
-        full_text += f"\n\n🛡 <b>Admin Groups ({len(admin_groups)}):</b>\n"
+        full_text += f"\n\n🛡 <b>Admin Groups/Channels ({len(admin_groups)}):</b>\n"
         full_text += "\n".join(admin_groups) if admin_groups else "None"
         
         # Trim for UI callback edit to prevent Telegram exception
@@ -1260,7 +1260,7 @@ async def run_userbot_admin_broadcast(update: Update, context: ContextTypes.DEFA
         client = Client(name=ub_id, session_string=session_str, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         await client.connect()
         me = await client.get_me()
-        my_id = me.id
+        my_id = me.id if me and hasattr(me, 'id') else "me"
         sent, failed = 0, 0
         
         # UPGRADED: DEEP SAFE CHECK
@@ -1269,7 +1269,7 @@ async def run_userbot_admin_broadcast(update: Update, context: ContextTypes.DEFA
                 if not dialog or not dialog.chat: continue
                 chat = dialog.chat
                 
-                if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+                if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]:
                     try:
                         member = await client.get_chat_member(chat.id, my_id)
                     except Exception:
