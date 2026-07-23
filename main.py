@@ -13,6 +13,7 @@ import pymongo
 from pyrogram import Client, enums, raw
 from pyrogram import filters as pyro_filters
 from pyrogram.types import Message as PyroMessage, ChatMemberUpdated as PyroChatMemberUpdated
+from pyrogram.types import InlineKeyboardMarkup as PyroInlineKeyboardMarkup, InlineKeyboardButton as PyroInlineKeyboardButton
 from pyrogram.errors import SessionPasswordNeeded, AuthKeyUnregistered, PeerIdInvalid
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember, Bot as TelegramBot
@@ -187,8 +188,9 @@ def _save_userbot(session_str, alias="New Account"):
     }
     save_data(data)
 
-# --- Active Sub-Bot Listeners (Auto Group Catcher) ---
+# --- Active Sub-Bot Listeners & Custom Message Configurator ---
 sub_bot_clients = {}
+subbot_setup_sessions = {} # Tracks state when Owner configures messages directly in Sub-bot
 
 async def start_subbot_listener(token: str, name: str):
     if token in sub_bot_clients: return
@@ -196,6 +198,122 @@ async def start_subbot_listener(token: str, name: str):
         bot_id = token.split(':')[0]
         client = Client(name=f"sb_{bot_id}", bot_token=token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         
+        # 1. Private Message Handler (For Setup Custom Messages)
+        @client.on_message(pyro_filters.private & pyro_filters.user(OWNER_ID))
+        async def sb_private_message(c: Client, message: PyroMessage):
+            t = c.bot_token
+            if t not in subbot_setup_sessions:
+                await message.reply_text("👋 Hello Owner! I am a Sub-Bot. Please assign me to a Batch in the Main Bot first to configure messages.")
+                return
+
+            session = subbot_setup_sessions[t]
+            step = session.get("step")
+            bname = session.get("bname")
+
+            if step == "MEDIA":
+                session["media_msg"] = message
+                session["step"] = "TEXT"
+                await message.reply_text("✅ <b>Media/Photo Received!</b>\n\nNow send the <b>Text Message / Caption</b>.\n<i>(Type /skip if you don't want a caption, Premium Emojis are supported!)</i>", parse_mode=enums.ParseMode.HTML)
+
+            elif step == "TEXT":
+                media_msg = session["media_msg"]
+                try:
+                    # Merge Media and Text intelligently inside the sub-bot
+                    if message.text and message.text.lower() != '/skip':
+                        caption_html = message.text.html if message.text else ""
+                        if media_msg.photo:
+                            sent = await c.send_photo(message.chat.id, media_msg.photo.file_id, caption=caption_html, parse_mode=enums.ParseMode.HTML)
+                        elif media_msg.video:
+                            sent = await c.send_video(message.chat.id, media_msg.video.file_id, caption=caption_html, parse_mode=enums.ParseMode.HTML)
+                        elif media_msg.document:
+                            sent = await c.send_document(message.chat.id, media_msg.document.file_id, caption=caption_html, parse_mode=enums.ParseMode.HTML)
+                        elif media_msg.animation:
+                            sent = await c.send_animation(message.chat.id, media_msg.animation.file_id, caption=caption_html, parse_mode=enums.ParseMode.HTML)
+                        else:
+                            sent = await c.send_message(message.chat.id, text=caption_html, parse_mode=enums.ParseMode.HTML)
+                    else:
+                        sent = await media_msg.copy(message.chat.id)
+                        
+                    session["final_msg_id"] = sent.id
+                    session["msg_chat_id"] = sent.chat.id
+                    session["step"] = "BTN_COUNT"
+                    await message.reply_text("✅ <b>Text Received & Message Saved!</b>\n\nHow many inline buttons do you want? (0-20)", parse_mode=enums.ParseMode.HTML)
+                except Exception as e:
+                    await message.reply_text(f"❌ Error merging message: {e}\nPlease send the Media again.")
+                    session["step"] = "MEDIA"
+
+            elif step == "BTN_COUNT":
+                try: count = int(message.text.strip())
+                except: return await message.reply_text("Please send a valid number (0-20).")
+                session["btn_count"] = count
+                session["btns"] = []
+                if count == 0:
+                    session["step"] = "TIMER"
+                    await message.reply_text("✅ <b>Buttons skipped!</b>\n\n⏱ Kitne seconds baad message auto-delete karna hai? (0 to keep permanent).", parse_mode=enums.ParseMode.HTML)
+                else:
+                    session["curr_btn"] = 1
+                    session["step"] = "BTN_NAME"
+                    await message.reply_text(f"Send button 1 name.", parse_mode=enums.ParseMode.HTML)
+
+            elif step == "BTN_NAME":
+                session["curr_name"] = message.text.strip()
+                session["step"] = "BTN_LINK"
+                await message.reply_text(f"Send button {session['curr_btn']} link.", parse_mode=enums.ParseMode.HTML)
+
+            elif step == "BTN_LINK":
+                session["curr_link"] = message.text.strip()
+                session["step"] = "BTN_COLOR"
+                kb = PyroInlineKeyboardMarkup([
+                    [PyroInlineKeyboardButton("🔵 Blue", callback_data="sbcol_blue"), PyroInlineKeyboardButton("🟢 Green", callback_data="sbcol_green")],
+                    [PyroInlineKeyboardButton("🔴 Red", callback_data="sbcol_red"), PyroInlineKeyboardButton("⚪ Default", callback_data="sbcol_default")]
+                ])
+                await message.reply_text("Choose Button Color:", reply_markup=kb)
+
+            elif step == "TIMER":
+                try: timer = int(message.text.strip())
+                except: return await message.reply_text("Please send a valid number.")
+
+                # FINAL SAVE
+                data = load_data()
+                if bname in data["batches"]:
+                    data["batches"][bname]["msg_chat_id"] = session["msg_chat_id"]
+                    data["batches"][bname]["msg_id"] = session["final_msg_id"]
+                    data["batches"][bname]["buttons"] = session["btns"]
+                    data["batches"][bname]["settings"]["delete_timer"] = max(0, timer)
+                    save_data(data)
+
+                del subbot_setup_sessions[t]
+                await message.reply_text(f"🎉 <b>Batch '{bname}' Configuration Complete!</b>\n\nYou can now go back to the Main Bot to start your broadcast.", parse_mode=enums.ParseMode.HTML)
+
+        # 2. Callbacks for Buttons Color (Sub-bot)
+        @client.on_callback_query(pyro_filters.regex("^sbcol_"))
+        async def sb_color_callback(c: Client, query):
+            t = c.bot_token
+            if t not in subbot_setup_sessions:
+                return await query.answer("Expired session.", show_alert=True)
+            
+            session = subbot_setup_sessions[t]
+            if session.get("step") != "BTN_COLOR":
+                return await query.answer("Out of sync.", show_alert=True)
+
+            color = query.data.split("_")[1]
+            session["btns"].append({
+                "name": session["curr_name"],
+                "url": session["curr_link"],
+                "color": color
+            })
+
+            await query.message.delete()
+
+            if session["curr_btn"] >= session["btn_count"]:
+                session["step"] = "TIMER"
+                await c.send_message(query.message.chat.id, "✅ <b>Buttons saved!</b>\n\n⏱ Kitne seconds baad message auto-delete karna hai? (0 to keep permanent).", parse_mode=enums.ParseMode.HTML)
+            else:
+                session["curr_btn"] += 1
+                session["step"] = "BTN_NAME"
+                await c.send_message(query.message.chat.id, f"Send button {session['curr_btn']} name.", parse_mode=enums.ParseMode.HTML)
+
+        # 3. Group Auto-Listener
         @client.on_message(pyro_filters.group | pyro_filters.channel)
         async def sb_on_message(c: Client, message: PyroMessage):
             chat = message.chat
@@ -648,7 +766,7 @@ async def delete_sent_message_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception: pass
 
 # --- Execution ---
-async def execute_send(bot_instance, chat_id_str: str, from_chat_id: int, message_id: int, reply_markup: Optional[InlineKeyboardMarkup], auto_delete: bool = True, delete_last: bool = True, auto_pin: bool = False, delete_timer: int = 0, context: ContextTypes.DEFAULT_TYPE = None, bot_token: str = BOT_TOKEN, custom_caption: str = None, is_pure_text: bool = False) -> bool:
+async def execute_send(bot_instance, chat_id_str: str, from_chat_id: int, message_id: int, reply_markup: Optional[InlineKeyboardMarkup], auto_delete: bool = True, delete_last: bool = True, auto_pin: bool = False, delete_timer: int = 0, context: ContextTypes.DEFAULT_TYPE = None, bot_token: str = BOT_TOKEN) -> bool:
     data = load_data()
     chat_id = int(chat_id_str)
 
@@ -658,14 +776,7 @@ async def execute_send(bot_instance, chat_id_str: str, from_chat_id: int, messag
         except Exception: pass 
 
     try:
-        # MAGIC KEY: Replace Caption/Text during broadcast for Sub-bots
-        if custom_caption:
-            if not is_pure_text:
-                sent_msg = await bot_instance.copy_message(chat_id=chat_id, from_chat_id=from_chat_id, message_id=message_id, reply_markup=reply_markup, caption=custom_caption, parse_mode="HTML")
-            else:
-                sent_msg = await bot_instance.send_message(chat_id=chat_id, text=custom_caption, reply_markup=reply_markup, parse_mode="HTML")
-        else:
-            sent_msg = await bot_instance.copy_message(chat_id=chat_id, from_chat_id=from_chat_id, message_id=message_id, reply_markup=reply_markup)
+        sent_msg = await bot_instance.copy_message(chat_id=chat_id, from_chat_id=from_chat_id, message_id=message_id, reply_markup=reply_markup)
 
         if auto_pin:
             try: await bot_instance.pin_chat_message(chat_id=chat_id, message_id=sent_msg.message_id, disable_notification=True)
@@ -731,17 +842,9 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
         auto_pin = settings.get("auto_pin", False)
         timer = settings.get("delete_timer", 0)
         
-        custom_caption = bdata.get("custom_text_html")
-        is_pure_text = not bdata.get("has_media", True) # Default to True for old configs
-        
         for chat_id_str in bdata.get("groups", []):
             if chat_id_str in data.get("groups", {}):
-                is_sent = await execute_send(
-                    bot_instance, chat_id_str, bdata["msg_chat_id"], bdata["msg_id"], rm, 
-                    auto_delete=auto_del, delete_last=del_last, auto_pin=auto_pin, 
-                    delete_timer=timer, context=context, bot_token=token_used,
-                    custom_caption=custom_caption, is_pure_text=is_pure_text
-                )
+                is_sent = await execute_send(bot_instance, chat_id_str, bdata["msg_chat_id"], bdata["msg_id"], rm, auto_delete=auto_del, delete_last=del_last, auto_pin=auto_pin, delete_timer=timer, context=context, bot_token=token_used)
                 if is_sent: 
                     sent_cnt += 1
                     bdata["stats"]["sent"] = bdata["stats"].get("sent", 0) + 1
@@ -1202,6 +1305,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if gid in batch_groups: 
             batch_groups.remove(gid)
         else:
+            # When toggling on, remove from all other batches (STRICT ISOLATION)
             for other_bname, other_bdata in data["batches"].items():
                 if other_bname != bname and gid in other_bdata.get("groups", []):
                     other_bdata["groups"].remove(gid)
@@ -1211,7 +1315,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_reply_markup(reply_markup=build_batch_edit_keyboard(bname, int(page_str)))
         return ConversationHandler.END
         
-    # --- MAGIC FIX: Sub-Bot Custom Message Flow ---
+    # --- SUB-BOT CUSTOM SETUP TRIGGER ---
     if cd.startswith("bat_setmsg_"):
         bname = cd.replace("bat_setmsg_", "", 1)
         context.user_data['current_batch_setup'] = bname
@@ -1220,69 +1324,32 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if assigned_bot_token:
             try:
                 bot_id = assigned_bot_token.split(':')[0]
+                # Enable Setup Session for this Sub-Bot
+                subbot_setup_sessions[assigned_bot_token] = {
+                    "bname": bname,
+                    "step": "MEDIA"
+                }
+                
                 async with TelegramBot(token=assigned_bot_token) as sub_bot_client:
                     me = await sub_bot_client.get_me()
                 
                 info_text = (
-                    f"🤖 <b>Sub-Bot Assigned: @{me.username}</b>\n\n"
-                    f"1. सीधे Telegram में <b>@{me.username}</b> पर जाएँ।\n"
-                    f"2. अपना <b>Media (Photo/Video)</b> उस सब-बोट को भेज दें।\n"
-                    f"3. भेजने के बाद वापस यहाँ मेन बोट में आएँ और नीचे <b>'✅ Fetch Media'</b> पर क्लिक करें।"
+                    f"🤖 <b>Sub-Bot Setup Activated: @{me.username}</b>\n\n"
+                    f"इस बैच का मैसेज <b>सीधे सब-बोट के अंदर</b> सेट होगा!\n\n"
+                    f"👉 <a href='https://t.me/{me.username}'>यहाँ क्लिक करके @{me.username} पर जाएँ</a>\n"
+                    f"👉 अपना Photo या Video भेजें, सब-बोट आपको आगे (Text, Buttons) के लिए खुद गाइड करेगा।\n\n"
+                    f"<i>(यहाँ मेन बोट में कुछ नहीं भेजना है)</i>"
                 )
                 kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ Fetch Media", callback_data=f"bat_fetchmsg_{bname}")],
-                    [InlineKeyboardButton("🔙 Back / Cancel", callback_data=f"bat_menu_{bname}")]
+                    [InlineKeyboardButton("🔙 Back to Batch", callback_data=f"bat_menu_{bname}")]
                 ])
-                await query.edit_message_text(info_text, parse_mode="HTML", reply_markup=kb)
+                await query.edit_message_text(info_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
                 return ConversationHandler.END
             except Exception as e:
-                logger.error(f"Error fetching subbot info: {e}")
+                logger.error(f"Error starting subbot setup: {e}")
                 
-        await query.edit_message_text(f"👇 <b>Step 1:</b> Batch '{bname}' ke liye Photo ya Video bhejein. (Ya sirf Text).", parse_mode="HTML", reply_markup=cancel_keyboard())
+        await query.edit_message_text(f"👇 <b>Step 1:</b> Batch '{bname}' ke liye Photo ya Video bhejein. (Ya sirf Text). HTML Parsing is Supported.", parse_mode="HTML", reply_markup=cancel_keyboard())
         return BATCH_CONFIG_MEDIA
-
-    if cd.startswith("bat_fetchmsg_"):
-        bname = cd.replace("bat_fetchmsg_", "", 1)
-        assigned_bot_token = data.get("batches", {}).get(bname, {}).get("assigned_bot")
-        msg = await query.message.reply_text("⏳ Fetching media directly from the Sub-Bot...")
-        try:
-            bot_id = assigned_bot_token.split(':')[0]
-            temp_client = Client(name=f"subbot_msg_{bot_id}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
-            await temp_client.start()
-            
-            fetched_msg = None
-            try:
-                async for m in temp_client.get_chat_history(user.id, limit=3):
-                    if m.text or m.media:
-                        fetched_msg = m
-                        break
-            except Exception as e:
-                logger.error(f"Failed to fetch history: {e}")
-            finally:
-                await temp_client.stop()
-            
-            if fetched_msg:
-                # Sub-Bot directly stores the message ID from its own chat! Fixes "Chat not found" Error.
-                data["batches"][bname]["msg_chat_id"] = user.id
-                data["batches"][bname]["msg_id"] = fetched_msg.id
-                data["batches"][bname]["has_media"] = True if fetched_msg.media else False
-                save_data(data)
-                
-                context.user_data['current_batch_setup'] = bname
-                
-                msg_txt = "✅ <b>Media Fetched!</b>\n\n"
-                msg_txt += "👇 <b>Step 2:</b> Now Send the <b>Text Message / Caption</b> <i>here in this Main Bot</i>.\n"
-                msg_txt += "(Premium Emojis, Quotes, Formatting sab support karega).\n\n"
-                msg_txt += "<i>(Agar koi text nahi chahiye to /skip bhejein)</i>"
-                
-                await msg.edit_text(msg_txt, parse_mode="HTML", reply_markup=cancel_keyboard())
-                return BATCH_CONFIG_TEXT
-            else:
-                await msg.edit_text("❌ मुझे कोई मैसेज नहीं मिला। कृपया कन्फर्म करें कि आपने सब-बोट को मैसेज भेजा है।", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
-                return ConversationHandler.END
-        except Exception as e:
-            await msg.edit_text(f"❌ Error fetching message: {e}", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
-            return ConversationHandler.END
 
     if cd.startswith("bat_usesaved_"):
         bname = cd.replace("bat_usesaved_", "", 1)
@@ -1661,6 +1728,93 @@ async def receive_batch_delete_n(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 # --- Message Configs & State Builders ---
+async def batch_config_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    context.user_data['batch_media_msg'] = msg
+    bname = context.user_data.get('current_batch_setup')
+    if msg.text:
+        data = load_data()
+        data["batches"][bname]["msg_chat_id"] = msg.chat_id
+        data["batches"][bname]["msg_id"] = msg.message_id
+        save_data(data)
+        await msg.reply_text("✅ आपका मैसेज सेव हो चुका है!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return BATCH_CONFIG_BTN_COUNT
+    else:
+        await msg.reply_text("👇 <b>Step 2:</b> Ab is Photo/Video ka Text (Caption) bhejein. (Agar caption nahi rakhna to '/skip' likhein).", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return BATCH_CONFIG_TEXT
+
+async def batch_config_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text_msg = update.effective_message
+    media_msg = context.user_data.get('batch_media_msg')
+    bname = context.user_data.get('current_batch_setup')
+    sent = await merge_media_text_and_save(context, text_msg.chat_id, media_msg, text_msg)
+    data = load_data()
+    data["batches"][bname]["msg_chat_id"] = sent.chat_id
+    data["batches"][bname]["msg_id"] = sent.message_id
+    save_data(data)
+    await text_msg.reply_text("✅ आपका मैसेज सेव हो चुका है!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
+    return BATCH_CONFIG_BTN_COUNT
+
+async def batch_config_btn_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    try: count = int(msg.text.strip())
+    except: return BATCH_CONFIG_BTN_COUNT
+    context.user_data["batch_button_count"] = count
+    context.user_data["batch_buttons"] = []
+    context.user_data["batch_current_button"] = 1
+    if count == 0:
+        bname = context.user_data.get('current_batch_setup')
+        data = load_data()
+        data["batches"][bname]["buttons"] = []
+        save_data(data)
+        await msg.reply_text("⏱ <b>Step 4:</b> Kitne seconds baad message auto-delete karna hai? (0 to keep permanent).", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return BATCH_CONFIG_DELETE_TIMER
+    await msg.reply_text("Send button 1 name.", parse_mode="HTML", reply_markup=cancel_keyboard())
+    return BATCH_CONFIG_BTN_NAME
+
+async def batch_config_btn_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.effective_message.text.strip()
+    if not name: return BATCH_CONFIG_BTN_NAME
+    context.user_data["batch_current_btn_name"] = name
+    await update.effective_message.reply_text(f"Send button {context.user_data['batch_current_button']} link.", parse_mode="HTML", reply_markup=cancel_keyboard())
+    return BATCH_CONFIG_BTN_LINK
+
+async def batch_config_btn_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    url = msg.text.strip()
+    if not url: return BATCH_CONFIG_BTN_LINK
+    context.user_data["batch_current_btn_url"] = url
+    await msg.reply_text("Choose Button Color:", parse_mode="HTML", reply_markup=color_selection_keyboard())
+    return BATCH_CONFIG_BTN_COLOR
+
+async def batch_config_btn_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    color = query.data.replace("color_", "")
+    context.user_data["batch_buttons"].append({"name": context.user_data["batch_current_btn_name"], "url": context.user_data["batch_current_btn_url"], "color": color})
+    current = context.user_data["batch_current_button"]
+    total = context.user_data["batch_button_count"]
+    if current >= total:
+        bname = context.user_data.get('current_batch_setup')
+        data = load_data()
+        data["batches"][bname]["buttons"] = context.user_data["batch_buttons"]
+        save_data(data)
+        await query.edit_message_text("✅ Batch Buttons saved!\n\n⏱ <b>Step 4:</b> Kitne seconds baad message auto-delete karna hai? (0 to keep permanent).", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return BATCH_CONFIG_DELETE_TIMER
+    context.user_data["batch_current_button"] += 1
+    await query.edit_message_text(f"Send button {context.user_data['batch_current_button']} name.", parse_mode="HTML", reply_markup=cancel_keyboard())
+    return BATCH_CONFIG_BTN_NAME
+
+async def batch_config_receive_delete_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try: timer = int(update.effective_message.text.strip())
+    except: return BATCH_CONFIG_DELETE_TIMER
+    bname = context.user_data.get('current_batch_setup')
+    data = load_data()
+    data["batches"][bname]["settings"]["delete_timer"] = max(0, timer)
+    save_data(data)
+    await update.effective_message.reply_text("✅ Batch configuration complete!", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
+    return ConversationHandler.END
+
 async def saved_ad_receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     context.user_data['saved_media_msg'] = msg
@@ -1737,132 +1891,6 @@ async def saved_ad_receive_btn_color(update: Update, context: ContextTypes.DEFAU
     context.user_data["saved_ad_current_button"] += 1
     await query.edit_message_text(f"Send button {context.user_data['saved_ad_current_button']} name.", parse_mode="HTML", reply_markup=cancel_keyboard())
     return SAVED_AD_BTN_NAME
-
-async def receive_batch_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try: delay = int(update.effective_message.text.strip())
-    except: return BATCH_CHANGE_DELAY
-    bname = context.user_data.get('current_batch_setup')
-    data = load_data()
-    data["batches"][bname]["settings"]["delay"] = delay
-    save_data(data)
-    if data["batches"][bname]["settings"]["auto_broadcast"]: manage_batch_job(context, bname, True)
-    await update.effective_message.reply_text(f"Delay for {bname} updated ✅", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
-    return ConversationHandler.END
-
-async def receive_batch_tog_del_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try: timer = int(update.effective_message.text.strip())
-    except: return BATCH_CHANGE_DEL_TIMER
-    bname = context.user_data.get('current_batch_setup')
-    data = load_data()
-    data["batches"][bname]["settings"]["auto_delete"] = True
-    data["batches"][bname]["settings"]["delete_timer"] = max(0, timer)
-    save_data(data)
-    await update.effective_message.reply_text(f"Auto-Delete Set to {timer}s ✅", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
-    return ConversationHandler.END
-
-# --- BATCH CUSTOM MESSAGE WITH DIRECT SUB-BOT LOGIC ---
-async def batch_config_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
-    context.user_data['batch_media_msg'] = msg
-    bname = context.user_data.get('current_batch_setup')
-    
-    if msg.text:
-        data = load_data()
-        data["batches"][bname]["msg_chat_id"] = msg.chat_id
-        data["batches"][bname]["msg_id"] = msg.message_id
-        data["batches"][bname]["has_media"] = False
-        save_data(data)
-        await msg.reply_text("✅ आपका मैसेज सेव हो चुका है!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
-        return BATCH_CONFIG_BTN_COUNT
-    else:
-        await msg.reply_text("👇 <b>Step 2:</b> Ab is Photo/Video ka Text (Caption) bhejein. (Agar caption nahi rakhna to '/skip' likhein).", parse_mode="HTML", reply_markup=cancel_keyboard())
-        return BATCH_CONFIG_TEXT
-
-async def batch_config_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text_msg = update.effective_message
-    bname = context.user_data.get('current_batch_setup')
-    data = load_data()
-    bdata = data["batches"][bname]
-
-    if bdata.get("assigned_bot"):
-        # SUB BOT FLOW (Media already fetched, just saving HTML text)
-        if text_msg.text and text_msg.text.lower() != '/skip':
-            bdata["custom_text_html"] = text_msg.text_html
-        else:
-            bdata["custom_text_html"] = None
-        save_data(data)
-        await text_msg.reply_text("✅ Text Saved!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
-        return BATCH_CONFIG_BTN_COUNT
-    else:
-        # NORMAL MAIN BOT FLOW
-        media_msg = context.user_data.get('batch_media_msg')
-        sent = await merge_media_text_and_save(context, text_msg.chat_id, media_msg, text_msg)
-        bdata["msg_chat_id"] = sent.chat_id
-        bdata["msg_id"] = sent.message_id
-        bdata["has_media"] = True if sent.photo or sent.video or sent.document or sent.animation else False
-        save_data(data)
-        await text_msg.reply_text("✅ Batch Media + Caption saved!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
-        return BATCH_CONFIG_BTN_COUNT
-
-async def batch_config_btn_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
-    try: count = int(msg.text.strip())
-    except: return BATCH_CONFIG_BTN_COUNT
-    context.user_data["batch_button_count"] = count
-    context.user_data["batch_buttons"] = []
-    context.user_data["batch_current_button"] = 1
-    if count == 0:
-        bname = context.user_data.get('current_batch_setup')
-        data = load_data()
-        data["batches"][bname]["buttons"] = []
-        save_data(data)
-        await msg.reply_text("⏱ <b>Step 4:</b> Kitne seconds baad message auto-delete karna hai? (0 to keep permanent).", parse_mode="HTML", reply_markup=cancel_keyboard())
-        return BATCH_CONFIG_DELETE_TIMER
-    await msg.reply_text("Send button 1 name.", parse_mode="HTML", reply_markup=cancel_keyboard())
-    return BATCH_CONFIG_BTN_NAME
-
-async def batch_config_btn_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = update.effective_message.text.strip()
-    if not name: return BATCH_CONFIG_BTN_NAME
-    context.user_data["batch_current_btn_name"] = name
-    await update.effective_message.reply_text(f"Send button {context.user_data['batch_current_button']} link.", parse_mode="HTML", reply_markup=cancel_keyboard())
-    return BATCH_CONFIG_BTN_LINK
-
-async def batch_config_btn_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
-    url = msg.text.strip()
-    if not url: return BATCH_CONFIG_BTN_LINK
-    context.user_data["batch_current_btn_url"] = url
-    await msg.reply_text("Choose Button Color:", parse_mode="HTML", reply_markup=color_selection_keyboard())
-    return BATCH_CONFIG_BTN_COLOR
-
-async def batch_config_btn_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    color = query.data.replace("color_", "")
-    context.user_data["batch_buttons"].append({"name": context.user_data["batch_current_btn_name"], "url": context.user_data["batch_current_btn_url"], "color": color})
-    current = context.user_data["batch_current_button"]
-    total = context.user_data["batch_button_count"]
-    if current >= total:
-        bname = context.user_data.get('current_batch_setup')
-        data = load_data()
-        data["batches"][bname]["buttons"] = context.user_data["batch_buttons"]
-        save_data(data)
-        await query.edit_message_text("✅ Batch Buttons saved!\n\n⏱ <b>Step 4:</b> Kitne seconds baad message auto-delete karna hai? (0 to keep permanent).", parse_mode="HTML", reply_markup=cancel_keyboard())
-        return BATCH_CONFIG_DELETE_TIMER
-    context.user_data["batch_current_button"] += 1
-    await query.edit_message_text(f"Send button {context.user_data['batch_current_button']} name.", parse_mode="HTML", reply_markup=cancel_keyboard())
-    return BATCH_CONFIG_BTN_NAME
-
-async def batch_config_receive_delete_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try: timer = int(update.effective_message.text.strip())
-    except: return BATCH_CONFIG_DELETE_TIMER
-    bname = context.user_data.get('current_batch_setup')
-    data = load_data()
-    data["batches"][bname]["settings"]["delete_timer"] = max(0, timer)
-    save_data(data)
-    await update.effective_message.reply_text("✅ Batch configuration complete!", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
-    return ConversationHandler.END
 
 async def config_receive_ad_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
@@ -2134,37 +2162,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text("Cancelled.", parse_mode="HTML", reply_markup=admin_keyboard())
     return ConversationHandler.END
 
-# --- Group Events & Analytics Tracking ---
-async def track_chat_members_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    result = update.chat_member
-    if not result: return
-    chat = result.chat
-    data = load_data()
-    gid_str = str(chat.id)
-    today = get_today_date_str()
-    if gid_str not in data.get("groups", {}): return
-    group_data = data["groups"][gid_str]
-    changed = False
-    if group_data.get("date") != today:
-        group_data["date"] = today; group_data["joins_today"] = 0; group_data["left_today"] = 0
-        changed = True
-    old_status = result.old_chat_member.status
-    new_status = result.new_chat_member.status
-    if old_status in [ChatMember.LEFT, ChatMember.KICKED] and new_status in [ChatMember.MEMBER, ChatMember.RESTRICTED]:
-        group_data["joins_today"] += 1; changed = True
-    elif old_status in [ChatMember.MEMBER, ChatMember.RESTRICTED, ChatMember.ADMINISTRATOR] and new_status in [ChatMember.LEFT, ChatMember.KICKED]:
-        group_data["left_today"] += 1; changed = True
-    
-    try:
-        members = await chat.get_member_count()
-        group_data["members"] = members
-        changed = True
-    except: pass
-    
-    if changed:
-        data["groups"][gid_str] = group_data
-        save_data(data)
-
 async def post_init(application: Application) -> None:
     data = load_data()
     if data.get("started") and data.get("configured") and has_ad_config(data):
@@ -2178,6 +2175,7 @@ async def post_init(application: Application) -> None:
             application.job_queue.run_repeating(batch_cycle_job, interval=delay, first=delay, data=bname, name=f"batch_job_{bname}")
             logger.info(f"Batch {bname} cycle restored. Delay: {delay}s")
 
+    # Start Pyrogram Active Listeners for all saved sub-bots on startup
     for token, info in data.get("sub_bots", {}).items():
         application.create_task(start_subbot_listener(token, info["name"]))
 
@@ -2188,7 +2186,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(callback_handler, pattern="^(?!(color_|confirm_broadcast|cancel_broadcast|cancel_state)).*$")],
+        entry_points=[CallbackQueryHandler(callback_handler, pattern="^(?!(color_|sbcol_|confirm_broadcast|cancel_broadcast|cancel_state)).*$")],
         states={
             CONFIG_AD_MEDIA: [MessageHandler(~filters.COMMAND & filters.ChatType.PRIVATE, config_receive_ad_media)],
             CONFIG_AD_TEXT: [MessageHandler(~filters.COMMAND & filters.ChatType.PRIVATE, config_receive_ad_text)],
@@ -2258,7 +2256,7 @@ def main():
     app.add_handler(ChatMemberHandler(track_bot_chat_status, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(MessageHandler((filters.ChatType.GROUPS | filters.ChatType.CHANNEL) & ~filters.COMMAND, remember_group_from_message))
 
-    print("Advanced Bot is up and running with Sub-Bot Direct Messaging & Auto-Listener...")
+    print("Advanced Bot is up and running with Isolated Pyrogram Setup for Sub-Bots...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
