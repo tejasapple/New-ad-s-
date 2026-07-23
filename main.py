@@ -425,13 +425,25 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     data = load_data()
     groups = data.get("groups", {})
     batch_groups = data.get("batches", {}).get(bname, {}).get("groups", [])
-    sorted_groups = sorted(groups.items(), key=lambda x: x[1].get("last_seen", 0), reverse=True)
+    all_sorted = sorted(groups.items(), key=lambda x: x[1].get("last_seen", 0), reverse=True)
+    
+    # ISOLATION FIX: Filter out groups that are assigned to OTHER batches
+    available_groups = []
+    for gid, ginfo in all_sorted:
+        in_other_batch = False
+        for other_bname, other_bdata in data.get("batches", {}).items():
+            if other_bname != bname and gid in other_bdata.get("groups", []):
+                in_other_batch = True
+                break
+        if not in_other_batch:
+            available_groups.append((gid, ginfo))
+            
     kb = []
     ITEMS_PER_PAGE = 10
-    total_pages = max(1, (len(sorted_groups) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+    total_pages = max(1, (len(available_groups) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
     start_idx = page * ITEMS_PER_PAGE
     end_idx = start_idx + ITEMS_PER_PAGE
-    current_page_groups = sorted_groups[start_idx:end_idx]
+    current_page_groups = available_groups[start_idx:end_idx]
     
     for gid, ginfo in current_page_groups:
         title = ginfo.get('title', 'Unknown')[:20]
@@ -889,8 +901,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         msg = await query.message.reply_text("⏳ Fetching groups directly from the Sub-Bot... (This may take a few seconds)")
         try:
-            # unique session name to avoid sqlite DB clash in memory
-            temp_client = Client(name=f"temp_sb_grp_{int(time.time())}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
+            # FIX: Removed in_memory=True to stop 401 AUTH_KEY_UNREGISTERED
+            bot_id = assigned_bot_token.split(':')[0]
+            session_name = f"subbot_{bot_id}"
+            temp_client = Client(name=session_name, bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH)
+            
             await temp_client.connect()
             
             fetched_count = 0
@@ -913,6 +928,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 data["groups"][gid_str]["members"] = c_members
                                 data["groups"][gid_str]["last_seen"] = int(time.time())
 
+                            # ISOLATION FIX: Remove fetched group from ALL OTHER batches
+                            for other_bname, other_bdata in data["batches"].items():
+                                if other_bname != bname and gid_str in other_bdata.get("groups", []):
+                                    other_bdata["groups"].remove(gid_str)
+                            
+                            # Add to current batch
                             if gid_str not in data["batches"][bname]["groups"]:
                                 data["batches"][bname]["groups"].append(gid_str)
                             
@@ -923,7 +944,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await temp_client.disconnect()
             save_data(data)
             
-            await msg.edit_text(f"✅ Fetch Complete!\n\nAdded {fetched_count} groups/channels to Batch '{bname}'.\n(Main Bot database updated as well).")
+            await msg.edit_text(f"✅ Fetch Complete!\n\nAdded {fetched_count} groups/channels to Batch '{bname}'.\n(This bot's groups are now exclusively isolated to this batch).")
             await query.edit_message_reply_markup(reply_markup=build_single_batch_keyboard(bname))
         except Exception as e:
             await msg.edit_text(f"❌ Error while fetching groups: {e}")
@@ -1202,7 +1223,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         assigned_bot_token = data.get("batches", {}).get(bname, {}).get("assigned_bot")
         if assigned_bot_token:
             try:
-                temp_client = Client(name=f"temp_sb_{int(time.time())}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
+                # FIX: Persistent session name for sub-bots
+                bot_id = assigned_bot_token.split(':')[0]
+                temp_client = Client(name=f"subbot_{bot_id}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH)
+                
                 await temp_client.connect()
                 me = await temp_client.get_me()
                 await temp_client.disconnect()
@@ -1232,7 +1256,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         assigned_bot_token = data.get("batches", {}).get(bname, {}).get("assigned_bot")
         msg = await query.message.reply_text("⏳ Fetching message directly from the Sub-Bot...")
         try:
-            temp_client = Client(name=f"temp_sb_msg_{int(time.time())}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
+            # FIX: Persistent session name for sub-bots
+            bot_id = assigned_bot_token.split(':')[0]
+            temp_client = Client(name=f"subbot_{bot_id}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH)
+            
             await temp_client.connect()
             fetched_msg = None
             
