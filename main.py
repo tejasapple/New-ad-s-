@@ -716,6 +716,30 @@ def remove_group_and_log(chat_id_str: str, title: str) -> None:
         if chat_id_str in bdata.get("groups", []): bdata["groups"].remove(chat_id_str)
     save_data(data)
 
+async def track_chat_members_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Tracks ordinary members joining/leaving in the group."""
+    result = update.chat_member
+    if not result: return
+    chat = result.chat
+    
+    try:
+        members = await chat.get_member_count()
+    except Exception:
+        members = 0
+
+    save_chat_data(chat.id, chat.title, chat.type, members)
+    
+    data = load_data()
+    gid_str = str(chat.id)
+    if gid_str in data["groups"]:
+        new_status = result.new_chat_member.status
+        old_status = result.old_chat_member.status
+        if new_status == ChatMember.MEMBER and old_status in [ChatMember.LEFT, ChatMember.BANNED]:
+            data["groups"][gid_str]["joins_today"] = data["groups"][gid_str].get("joins_today", 0) + 1
+        elif new_status in [ChatMember.LEFT, ChatMember.BANNED] and old_status == ChatMember.MEMBER:
+            data["groups"][gid_str]["left_today"] = data["groups"][gid_str].get("left_today", 0) + 1
+        save_data(data)
+
 async def track_bot_chat_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     result = update.my_chat_member
     if not result: return
@@ -1305,7 +1329,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if gid in batch_groups: 
             batch_groups.remove(gid)
         else:
-            # When toggling on, remove from all other batches (STRICT ISOLATION)
             for other_bname, other_bdata in data["batches"].items():
                 if other_bname != bname and gid in other_bdata.get("groups", []):
                     other_bdata["groups"].remove(gid)
@@ -1314,7 +1337,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data(data)
         await query.edit_message_reply_markup(reply_markup=build_batch_edit_keyboard(bname, int(page_str)))
         return ConversationHandler.END
-        
+
     # --- SUB-BOT CUSTOM SETUP TRIGGER ---
     if cd.startswith("bat_setmsg_"):
         bname = cd.replace("bat_setmsg_", "", 1)
@@ -1324,7 +1347,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if assigned_bot_token:
             try:
                 bot_id = assigned_bot_token.split(':')[0]
-                # Enable Setup Session for this Sub-Bot
                 subbot_setup_sessions[assigned_bot_token] = {
                     "bname": bname,
                     "step": "MEDIA"
@@ -1337,12 +1359,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🤖 <b>Sub-Bot Setup Activated: @{me.username}</b>\n\n"
                     f"इस बैच का मैसेज <b>सीधे सब-बोट के अंदर</b> सेट होगा!\n\n"
                     f"👉 <a href='https://t.me/{me.username}'>यहाँ क्लिक करके @{me.username} पर जाएँ</a>\n"
-                    f"👉 अपना Photo या Video भेजें, सब-बोट आपको आगे (Text, Buttons) के लिए खुद गाइड करेगा।\n\n"
+                    f"👉 अपना Photo/Video/Text भेजें, सब-बोट आपको आगे (Text, Buttons) के लिए खुद गाइड करेगा।\n\n"
                     f"<i>(यहाँ मेन बोट में कुछ नहीं भेजना है)</i>"
                 )
-                kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Back to Batch", callback_data=f"bat_menu_{bname}")]
-                ])
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Batch", callback_data=f"bat_menu_{bname}")]])
                 await query.edit_message_text(info_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
                 return ConversationHandler.END
             except Exception as e:
@@ -1727,7 +1747,7 @@ async def receive_batch_delete_n(update: Update, context: ContextTypes.DEFAULT_T
     await msg_reply.edit_text(f"✅ Bulk Deletion complete for batch '{bname}'.\n\n🗑️ Successfully Deleted: {del_c}\n❌ Failed/Missing: {fail_c}", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
     return ConversationHandler.END
 
-# --- Message Configs & State Builders ---
+# --- BATCH CONFIG HANDLERS (Missing ones RESTORED) ---
 async def batch_config_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     context.user_data['batch_media_msg'] = msg
@@ -1815,6 +1835,29 @@ async def batch_config_receive_delete_timer(update: Update, context: ContextType
     await update.effective_message.reply_text("✅ Batch configuration complete!", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
     return ConversationHandler.END
 
+async def receive_batch_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try: delay = int(update.effective_message.text.strip())
+    except: return BATCH_CHANGE_DELAY
+    bname = context.user_data.get('current_batch_setup')
+    data = load_data()
+    data["batches"][bname]["settings"]["delay"] = delay
+    save_data(data)
+    if data["batches"][bname]["settings"]["auto_broadcast"]: manage_batch_job(context, bname, True)
+    await update.effective_message.reply_text(f"Delay for {bname} updated ✅", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
+    return ConversationHandler.END
+
+async def receive_batch_tog_del_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try: timer = int(update.effective_message.text.strip())
+    except: return BATCH_CHANGE_DEL_TIMER
+    bname = context.user_data.get('current_batch_setup')
+    data = load_data()
+    data["batches"][bname]["settings"]["auto_delete"] = True
+    data["batches"][bname]["settings"]["delete_timer"] = max(0, timer)
+    save_data(data)
+    await update.effective_message.reply_text(f"Auto-Delete Set to {timer}s ✅", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
+    return ConversationHandler.END
+
+# --- Message Configs & State Builders ---
 async def saved_ad_receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     context.user_data['saved_media_msg'] = msg
@@ -2175,7 +2218,6 @@ async def post_init(application: Application) -> None:
             application.job_queue.run_repeating(batch_cycle_job, interval=delay, first=delay, data=bname, name=f"batch_job_{bname}")
             logger.info(f"Batch {bname} cycle restored. Delay: {delay}s")
 
-    # Start Pyrogram Active Listeners for all saved sub-bots on startup
     for token, info in data.get("sub_bots", {}).items():
         application.create_task(start_subbot_listener(token, info["name"]))
 
@@ -2256,7 +2298,7 @@ def main():
     app.add_handler(ChatMemberHandler(track_bot_chat_status, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(MessageHandler((filters.ChatType.GROUPS | filters.ChatType.CHANNEL) & ~filters.COMMAND, remember_group_from_message))
 
-    print("Advanced Bot is up and running with Isolated Pyrogram Setup for Sub-Bots...")
+    print("Advanced Bot is up and running with Sub-Bot Direct Messaging & Auto-Listener...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
