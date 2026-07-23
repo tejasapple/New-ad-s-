@@ -1,0 +1,6 @@
+python-telegram-bot>=20.0
+pyrogram
+tgcrypto
+pymongo
+motor
+nest_asyncio
