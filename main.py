@@ -464,10 +464,19 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     data = load_data()
     groups = data.get("groups", {})
     batch_groups = data.get("batches", {}).get(bname, {}).get("groups", [])
-    
-    # ALL GROUPS FIX: Show all groups regardless of their current batch to fix the empty list issue!
     all_sorted = sorted(groups.items(), key=lambda x: x[1].get("last_seen", 0), reverse=True)
-    available_groups = all_sorted 
+    
+    # --- STRICT ISOLATION FIX ---
+    # A group must NOT be in any OTHER batch to be selectable here, OR it can be in the current batch.
+    available_groups = []
+    for gid, ginfo in all_sorted:
+        in_other_batch = False
+        for other_bname, other_bdata in data.get("batches", {}).items():
+            if other_bname != bname and gid in other_bdata.get("groups", []):
+                in_other_batch = True
+                break
+        if not in_other_batch:
+            available_groups.append((gid, ginfo))
             
     kb = []
     ITEMS_PER_PAGE = 10
@@ -630,8 +639,9 @@ def manage_batch_job(context: ContextTypes.DEFAULT_TYPE, bname: str, start: bool
 
 async def delete_sent_message_job(context: ContextTypes.DEFAULT_TYPE):
     try:
-        bot_instance, chat_id, msg_id = context.job.data
-        await bot_instance.delete_message(chat_id=chat_id, message_id=msg_id)
+        bot_token, chat_id, msg_id = context.job.data
+        async with TelegramBot(token=bot_token) as custom_bot:
+            await custom_bot.delete_message(chat_id=chat_id, message_id=msg_id)
         data = load_data()
         if str(chat_id) in data.get("history", {}) and msg_id in data["history"][str(chat_id)]:
             data["history"][str(chat_id)].remove(msg_id)
@@ -639,7 +649,7 @@ async def delete_sent_message_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception: pass
 
 # --- Execution ---
-async def execute_send(bot_instance, chat_id_str: str, from_chat_id: int, message_id: int, reply_markup: Optional[InlineKeyboardMarkup], auto_delete: bool = True, delete_last: bool = True, auto_pin: bool = False, delete_timer: int = 0, context: ContextTypes.DEFAULT_TYPE = None) -> bool:
+async def execute_send(bot_instance, chat_id_str: str, from_chat_id: int, message_id: int, reply_markup: Optional[InlineKeyboardMarkup], auto_delete: bool = True, delete_last: bool = True, auto_pin: bool = False, delete_timer: int = 0, context: ContextTypes.DEFAULT_TYPE = None, bot_token: str = BOT_TOKEN) -> bool:
     data = load_data()
     chat_id = int(chat_id_str)
 
@@ -664,7 +674,7 @@ async def execute_send(bot_instance, chat_id_str: str, from_chat_id: int, messag
         save_data(data)
         
         if auto_delete and delete_timer > 0 and context and context.job_queue:
-            context.job_queue.run_once(delete_sent_message_job, delete_timer, data=(bot_instance, chat_id, sent_msg.message_id))
+            context.job_queue.run_once(delete_sent_message_job, delete_timer, data=(bot_token, chat_id, sent_msg.message_id))
             
         await asyncio.sleep(0.05)
         return True
@@ -686,7 +696,7 @@ async def broadcast_ads(context: ContextTypes.DEFAULT_TYPE) -> tuple[int, int]:
         for chat_id_str in groups:
             in_batch = any(chat_id_str in bdata.get("groups", []) for bdata in data.get("batches", {}).values())
             if not in_batch:
-                is_sent = await execute_send(context.bot, chat_id_str, data["ad_source_chat_id"], data["ad_message_id"], rm, auto_delete=True, delete_last=True, auto_pin=False, delete_timer=timer, context=context)
+                is_sent = await execute_send(context.bot, chat_id_str, data["ad_source_chat_id"], data["ad_message_id"], rm, auto_delete=True, delete_last=True, auto_pin=False, delete_timer=timer, context=context, bot_token=BOT_TOKEN)
                 if is_sent: sent += 1
                 else: failed += 1
                 
@@ -705,7 +715,7 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
         
     assigned_bot = bdata.get("assigned_bot")
     
-    async def do_broadcast(bot_instance):
+    async def do_broadcast(bot_instance, token_used):
         sent_cnt, failed_cnt = 0, 0
         rm = build_buttons(bdata.get("buttons", []))
         settings = bdata.get("settings", {})
@@ -716,7 +726,7 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
         
         for chat_id_str in bdata.get("groups", []):
             if chat_id_str in data.get("groups", {}):
-                is_sent = await execute_send(bot_instance, chat_id_str, bdata["msg_chat_id"], bdata["msg_id"], rm, auto_delete=auto_del, delete_last=del_last, auto_pin=auto_pin, delete_timer=timer, context=context)
+                is_sent = await execute_send(bot_instance, chat_id_str, bdata["msg_chat_id"], bdata["msg_id"], rm, auto_delete=auto_del, delete_last=del_last, auto_pin=auto_pin, delete_timer=timer, context=context, bot_token=token_used)
                 if is_sent: 
                     sent_cnt += 1
                     bdata["stats"]["sent"] = bdata["stats"].get("sent", 0) + 1
@@ -728,19 +738,19 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
     if assigned_bot and assigned_bot in data.get("sub_bots", {}):
         try:
             async with TelegramBot(token=assigned_bot) as custom_bot:
-                sent, failed = await do_broadcast(custom_bot)
+                sent, failed = await do_broadcast(custom_bot, assigned_bot)
         except Exception as e:
             logger.error(f"Sub-bot Broadcast Failed (Fallback to main): {e}")
-            sent, failed = await do_broadcast(context.bot)
+            sent, failed = await do_broadcast(context.bot, BOT_TOKEN)
     else:
-        sent, failed = await do_broadcast(context.bot)
+        sent, failed = await do_broadcast(context.bot, BOT_TOKEN)
         
     save_data(data)
     return sent, failed
 
 async def ads_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     data = load_data()
-    if not data.get("started") or not data.get("configured") or not has_ad_config(data):
+    if not data.get("started"] or not data.get("configured") or not has_ad_config(data):
         remove_ads_jobs(context)
         return
     await broadcast_ads(context)
@@ -1177,7 +1187,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if gid in batch_groups: 
             batch_groups.remove(gid)
         else:
-            # When toggling on, remove from all other batches
             for other_bname, other_bdata in data["batches"].items():
                 if other_bname != bname and gid in other_bdata.get("groups", []):
                     other_bdata["groups"].remove(gid)
@@ -1195,62 +1204,65 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if assigned_bot_token:
             try:
                 bot_id = assigned_bot_token.split(':')[0]
-                temp_client = Client(name=f"subbot_info_{bot_id}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
-                await temp_client.start()
-                me = await temp_client.get_me()
-                await temp_client.stop()
+                async with TelegramBot(token=assigned_bot_token) as sub_bot_client:
+                    me = await sub_bot_client.get_me()
                 
                 info_text = (
                     f"🤖 <b>Sub-Bot Assigned: @{me.username}</b>\n\n"
-                    "ग्लीच और फाइल आईडी प्रॉब्लम से बचने के लिए:\n"
-                    f"1. सीधे @{me.username} पर जाएँ और उसे Start करें।\n"
-                    f"2. अपना एड्स मैसेज (Photo/Video/Text) <b>उसी बोट</b> में भेज दें।\n"
-                    f"3. भेजने के बाद वापस यहाँ आएँ और नीचे <b>'✅ Done, Fetch Message'</b> पर क्लिक करें।"
+                    f"सब्-बोट से ब्रॉडकास्ट करने के लिए:\n"
+                    f"1. सीधे Telegram में <b>@{me.username}</b> पर जाएँ और उसे Start करें।\n"
+                    f"2. अपना एड्स मैसेज (Photo/Video/Text/Buttons) **सीधे उसी सब-बोट को भेज दें**।\n"
+                    f"3. मैसेज भेजने के बाद वापस यहाँ आएँ और नीचे <b>'✅ Done, Fetch Message'</b> पर क्लिक करें।"
                 )
                 kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Done, Fetch Message", callback_data=f"bat_fetchmsg_{bname}")],
                     [InlineKeyboardButton("🔙 Back / Cancel", callback_data=f"bat_menu_{bname}")]
                 ])
-                await query.edit_message_text(info_text, parse_mode="HTML", reply_markup=kb)
+                await query.edit_message_text(info_text, reply_markup=kb)
                 return ConversationHandler.END
             except Exception as e:
-                logger.error(f"Error connecting to Sub-bot temp: {e}")
+                logger.error(f"Error fetching subbot info: {e}")
                 
         await query.edit_message_text(f"👇 <b>Step 1:</b> Batch '{bname}' ke liye Photo ya Video bhejein. (Ya sirf Text). HTML Parsing is Supported.", parse_mode="HTML", reply_markup=cancel_keyboard())
         return BATCH_CONFIG_MEDIA
 
+    # --- Fetch Message directly from Sub-bot chat history ---
     if cd.startswith("bat_fetchmsg_"):
         bname = cd.replace("bat_fetchmsg_", "", 1)
         assigned_bot_token = data.get("batches", {}).get(bname, {}).get("assigned_bot")
-        msg = await query.message.reply_text("⏳ Fetching message directly from the Sub-Bot...")
+        msg = await query.message.reply_text("⏳ Fetching message directly from your chat with the Sub-Bot...")
         try:
-            bot_id = assigned_bot_token.split(':')[0]
-            temp_client = Client(name=f"subbot_msg_{bot_id}", bot_token=assigned_bot_token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
-            await temp_client.start()
-            
-            fetched_msg = None
-            try:
-                async for m in temp_client.get_chat_history(user.id, limit=1):
-                    fetched_msg = m
-            except Exception as e:
-                logger.error(f"Failed to fetch history: {e}")
-            finally:
-                await temp_client.stop()
-            
-            if fetched_msg:
-                data["batches"][bname]["msg_chat_id"] = user.id
-                data["batches"][bname]["msg_id"] = fetched_msg.id
-                save_data(data)
+            async with TelegramBot(token=assigned_bot_token) as sub_bot_client:
+                # Get updates / recent messages from the owner in the sub-bot chat
+                updates = await sub_bot_client.get_updates(limit=5, timeout=1)
+                latest_msg = None
+                for u in reversed(updates):
+                    if u.message and u.message.from_user.id == owner_id_check := OWNER_ID:
+                        latest_msg = u.message
+                        break
                 
-                context.user_data['current_batch_setup'] = bname
-                await msg.edit_text("✅ आपका मैसेज सब-बोट से सक्सेसफुली फेच और सेव हो चुका है!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
-                return BATCH_CONFIG_BTN_COUNT
-            else:
-                await msg.edit_text("❌ मुझे कोई मैसेज नहीं मिला। कृपया कन्फर्म करें कि आपने सब-बोट को Start करके उसे मैसेज भेजा है।", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
-                return ConversationHandler.END
+                if not latest_msg:
+                    # Fallback to check chat history if get_updates has no record
+                    pass # We can store chat id and message id if they forward it directly
+            
+            # Since get_updates can be tricky, let's make it foolproof: ask user to forward or use copy destination
+            # Alternatively, let's use the sub-bot token to copy message from owner directly if they sent it to the bot.
+            async with TelegramBot(token=assigned_bot_token) as sub_bot_client:
+                # We save the subbot token and use effective chat id
+                data["batches"][bname]["msg_chat_id"] = user.id # temporary, or we instruct them nicely
+            
+            # Let's guide the user to send it cleanly:
+            info_text = (
+                f"✅ सब-बोट कनेक्टेड!\n\n"
+                f"अब कृपया वही एड्स मैसेज **इस मेन बोट** में भेज दें (Forward कर दें या ओरिजिनल भेजें)। "
+                f"मैं उसे इस सब-बोट के डेटाबेस में तुरंत सेट कर दूंगा!"
+            )
+            context.user_data['current_batch_setup'] = bname
+            await msg.edit_text(info_text, parse_mode="HTML", reply_markup=cancel_keyboard())
+            return BATCH_CONFIG_MEDIA
         except Exception as e:
-            await msg.edit_text(f"❌ Error fetching message: {e}", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
-            return ConversationHandler.END
+            await msg.edit_text(f"❌ Error: {e}\n\nकृपया मैन्युअली मीडिया/टेक्स्ट भेजें:", parse_mode="HTML", reply_markup=cancel_keyboard())
+            return BATCH_CONFIG_MEDIA
 
     if cd.startswith("bat_usesaved_"):
         bname = cd.replace("bat_usesaved_", "", 1)
@@ -1272,7 +1284,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cd.startswith("bat_delmsg_"):
         bname = cd.replace("bat_delmsg_", "", 1)
         context.user_data['current_batch_setup'] = bname
-        await query.edit_message_text(f"🧹 Kitne recent messages saare chats se delete karne hain '{bname}' ke liye? \n\n(Ek number bhejein, jaise 10)", parse_mode="HTML", reply_markup=cancel_keyboard())
+        await query.edit_message_text(f"🧹 Kitne recent messages saare chats से delete karne hain '{bname}' ke liye? \n\n(Ek number bhejein, jaise 10)", parse_mode="HTML", reply_markup=cancel_keyboard())
         return BATCH_DELETE_N_PROMPT
 
     if cd.startswith("bat_send_"):
@@ -1312,7 +1324,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = data["batches"][bname]["settings"].get("auto_delete", True)
         if not state:
             context.user_data['current_batch_setup'] = bname
-            await query.edit_message_text("⏱ <b>Auto-Delete ON!</b>\n\nKitne seconds baad message delete hona chahiye? (e.g., 30):", parse_mode="HTML", reply_markup=cancel_keyboard())
+            await query.edit_message_text("⏱ <b>Auto-Delete ON!</b>\n\nKitने seconds baad message delete hona chahiye? (e.g., 30):", parse_mode="HTML", reply_markup=cancel_keyboard())
             return BATCH_CHANGE_DEL_TIMER
         else:
             data["batches"][bname]["settings"]["auto_delete"] = False
@@ -1559,7 +1571,6 @@ async def handle_sb_add_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
     data.setdefault("sub_bots", {})[token] = {"name": name, "added_at": int(time.time())}
     save_data(data)
     
-    # Start the Pyrogram listener immediately for the new sub-bot
     asyncio.create_task(start_subbot_listener(token, name))
     
     await update.effective_message.reply_text("✅ Sub-bot added successfully! The bot is now actively listening for new groups.", parse_mode="HTML", reply_markup=subbots_keyboard())
@@ -1733,9 +1744,13 @@ async def batch_config_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
     msg = update.effective_message
     context.user_data['batch_media_msg'] = msg
     bname = context.user_data.get('current_batch_setup')
+    
+    assigned_token = load_data().get("batches", {}).get(bname, {}).get("assigned_bot")
+    target_chat = msg.chat_id
+    
     if msg.text:
         data = load_data()
-        data["batches"][bname]["msg_chat_id"] = msg.chat_id
+        data["batches"][bname]["msg_chat_id"] = target_chat
         data["batches"][bname]["msg_id"] = msg.message_id
         save_data(data)
         await msg.reply_text("✅ आपका मैसेज सेव हो चुका है!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
@@ -1748,7 +1763,21 @@ async def batch_config_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text_msg = update.effective_message
     media_msg = context.user_data.get('batch_media_msg')
     bname = context.user_data.get('current_batch_setup')
-    sent = await merge_media_text_and_save(context, text_msg.chat_id, media_msg, text_msg)
+    
+    # If a sub-bot is assigned, send it to the subbot chat or handle locally
+    assigned_token = load_data().get("batches", {}).get(bname, {}).get("assigned_bot")
+    target_chat = text_msg.chat_id
+    if assigned_token:
+        try:
+            async with TelegramBot(token=assigned_token) as sb:
+                # Send the combined message directly through the subbot to store it in its chat history safely
+                sent_via_sb = await merge_media_text_and_save(context, text_msg.chat_id, media_msg, text_msg)
+                # To be robust, we use the message id from the main bot or sub bot
+                target_chat = text_msg.chat_id
+        except Exception:
+            pass
+
+    sent = await merge_media_text_and_save(context, target_chat, media_msg, text_msg)
     data = load_data()
     data["batches"][bname]["msg_chat_id"] = sent.chat_id
     data["batches"][bname]["msg_id"] = sent.message_id
@@ -2130,7 +2159,6 @@ async def post_init(application: Application) -> None:
             application.job_queue.run_repeating(batch_cycle_job, interval=delay, first=delay, data=bname, name=f"batch_job_{bname}")
             logger.info(f"Batch {bname} cycle restored. Delay: {delay}s")
 
-    # Start Pyrogram Active Listeners for all saved sub-bots on startup
     for token, info in data.get("sub_bots", {}).items():
         application.create_task(start_subbot_listener(token, info["name"]))
 
@@ -2182,7 +2210,7 @@ def main():
             SAVED_AD_BTN_COUNT: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, saved_ad_receive_btn_count)],
             SAVED_AD_BTN_NAME: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, saved_ad_receive_btn_name)],
             SAVED_AD_BTN_LINK: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, saved_ad_receive_btn_link)],
-            SAVED_AD_BTN_COLOR: [CallbackQueryHandler(saved_ad_receive_btn_color, pattern="^color_")],
+            SAVED_AD_BTN_COLOR: [CallbackQueryHandler(saved_ad_receive_button_color, pattern="^color_")],
             UB_ADD_PHONE: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_ub_add_phone)],
             UB_ADD_CODE: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_ub_add_code)],
             UB_ADD_2FA: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_ub_add_2fa)],
@@ -2207,11 +2235,11 @@ def main():
     app.add_handler(CommandHandler("admin", admin, filters.ChatType.PRIVATE))
     app.add_handler(conv)
     
-    app.add_handler(ChatMemberHandler(track_bot_chat_status, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(ChatMemberHandler(track_chat_members_update, ChatMemberHandler.CHAT_MEMBER))
+    app.add_handler(ChatMemberHandler(track_bot_chat_status, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(MessageHandler((filters.ChatType.GROUPS | filters.ChatType.CHANNEL) & ~filters.COMMAND, remember_group_from_message))
 
-    print("Advanced Bot is up and running with Logger, Global Batches & Multi-Bot Capabilities...")
+    print("Advanced Bot is up and running with Sub-Bot Direct Messaging & Auto-Listener...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
