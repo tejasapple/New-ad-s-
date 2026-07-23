@@ -1084,38 +1084,58 @@ async def run_userbot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     try:
         client = Client(name=ub_id, session_string=session_str, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         await client.connect()
-        me = await client.get_me()
-        my_id = me.id if me and hasattr(me, 'id') else "me"
+        
+        my_id = None
+        try:
+            me = await client.get_me()
+            if me: my_id = me.id
+        except Exception:
+            pass
+            
         admin_groups = []
         
-        # UPGRADED: DEEP SAFE CHECK WITH ID FIX
+        # COMPLETELY SAFE RE-WRITE TO BYPASS "my_id" CRASH
         async for dialog in client.get_dialogs():
             try:
                 if not dialog or not dialog.chat: continue
                 chat = dialog.chat
                 
                 if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]:
-                    try:
-                        member = await client.get_chat_member(chat.id, my_id)
-                    except Exception:
-                        continue # Skip if error occurs getting member for this specific chat
-                        
-                    if not member or not hasattr(member, 'status'): continue
+                    # Pyrogram automatically parses is_creator & privileges from the dialog request
+                    is_owner = getattr(chat, 'is_creator', False)
+                    is_admin = getattr(chat, 'privileges', None) is not None
                     
-                    if member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]:
-                        title = chat.title if hasattr(chat, 'title') and chat.title else "Unknown Group"
-                        try:
-                            members_count = await client.get_chat_members_count(chat.id)
-                        except Exception:
-                            members_count = chat.members_count if hasattr(chat, 'members_count') and chat.members_count else 0
+                    status_role = None
+                    if is_owner: status_role = "OWNER"
+                    elif is_admin: status_role = "ADMINISTRATOR"
+                    else:
+                        # Fallback ONLY if my_id successfully fetched
+                        if my_id:
+                            try:
+                                member = await client.get_chat_member(chat.id, my_id)
+                                if member and member.status == enums.ChatMemberStatus.OWNER:
+                                    status_role = "OWNER"
+                                elif member and member.status == enums.ChatMemberStatus.ADMINISTRATOR:
+                                    status_role = "ADMINISTRATOR"
+                            except Exception:
+                                pass
+                    
+                    if status_role:
+                        title = getattr(chat, 'title', 'Unknown Group') or "Unknown Group"
+                        members_count = getattr(chat, 'members_count', None) or 0
+                        if not members_count:
+                            try:
+                                members_count = await client.get_chat_members_count(chat.id)
+                            except Exception:
+                                members_count = 0
                         
                         admin_groups.append({
                             "title": title, 
                             "members": members_count,
-                            "role": str(member.status).split('.')[-1]
+                            "role": status_role
                         })
             except Exception:
-                continue # Skip broken dialogs gracefully
+                continue 
 
         await client.disconnect()
         
@@ -1145,37 +1165,57 @@ async def run_check_owner_admin(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         client = Client(name=ub_id, session_string=session_str, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         await client.connect()
-        me = await client.get_me()
-        my_id = me.id if me and hasattr(me, 'id') else "me"
+        
+        my_id = None
+        try:
+            me = await client.get_me()
+            if me: my_id = me.id
+        except Exception:
+            pass
+            
         owner_groups = []
         admin_groups = []
         
-        # UPGRADED: DEEP SAFE CHECK WITH ID FIX
+        # COMPLETELY SAFE RE-WRITE TO BYPASS "my_id" CRASH
         async for dialog in client.get_dialogs():
             try:
                 if not dialog or not dialog.chat: continue
                 chat = dialog.chat
                 
                 if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]:
-                    try:
-                        member = await client.get_chat_member(chat.id, my_id)
-                    except Exception:
-                        continue # Skip gracefully if failed for one chat
+                    is_owner = getattr(chat, 'is_creator', False)
+                    is_admin = getattr(chat, 'privileges', None) is not None
+                    
+                    status_role = None
+                    if is_owner: status_role = "OWNER"
+                    elif is_admin: status_role = "ADMINISTRATOR"
+                    else:
+                        # Fallback ONLY if my_id successfully fetched
+                        if my_id:
+                            try:
+                                member = await client.get_chat_member(chat.id, my_id)
+                                if member and member.status == enums.ChatMemberStatus.OWNER:
+                                    status_role = "OWNER"
+                                elif member and member.status == enums.ChatMemberStatus.ADMINISTRATOR:
+                                    status_role = "ADMINISTRATOR"
+                            except Exception:
+                                pass
+                    
+                    if status_role:
+                        title = getattr(chat, 'title', 'Unknown Group') or "Unknown Group"
+                        members_count = getattr(chat, 'members_count', None) or 0
+                        if not members_count:
+                            try:
+                                members_count = await client.get_chat_members_count(chat.id)
+                            except Exception:
+                                members_count = 0
                         
-                    if not member or not hasattr(member, 'status'): continue
-                    
-                    title = chat.title if hasattr(chat, 'title') and chat.title else "Unknown Group"
-                    try:
-                        members_count = await client.get_chat_members_count(chat.id)
-                    except Exception:
-                        members_count = chat.members_count if hasattr(chat, 'members_count') and chat.members_count else 0
-                    
-                    if member.status == enums.ChatMemberStatus.OWNER:
-                        owner_groups.append(f"👑 {title} (👥 {members_count} members)")
-                    elif member.status == enums.ChatMemberStatus.ADMINISTRATOR:
-                        admin_groups.append(f"🛡 {title} (👥 {members_count} members)")
+                        if status_role == "OWNER":
+                            owner_groups.append(f"👑 {title} (👥 {members_count} members)")
+                        elif status_role == "ADMINISTRATOR":
+                            admin_groups.append(f"🛡 {title} (👥 {members_count} members)")
             except Exception:
-                continue # Skip broken dialogs gracefully
+                continue 
 
         await client.disconnect()
         
@@ -1185,13 +1225,11 @@ async def run_check_owner_admin(update: Update, context: ContextTypes.DEFAULT_TY
         full_text += f"\n\n🛡 <b>Admin Groups/Channels ({len(admin_groups)}):</b>\n"
         full_text += "\n".join(admin_groups) if admin_groups else "None"
         
-        # Trim for UI callback edit to prevent Telegram exception
         ui_text = full_text
         if len(ui_text) > 3900: ui_text = ui_text[:3900] + "\n... (truncated)"
         
         await update.callback_query.message.edit_text(ui_text, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
         
-        # Chunk logic for Logger Bot to bypass 4000 limit
         logger_header = f"👑 <b>Account Owner/Admin Scan</b>\n<b>Account:</b> {alias}\n\n"
         if len(full_text) + len(logger_header) <= 3900:
             await send_to_logger(logger_header + full_text)
@@ -1199,7 +1237,7 @@ async def run_check_owner_admin(update: Update, context: ContextTypes.DEFAULT_TY
             msg_parts = [full_text[i:i+3800] for i in range(0, len(full_text), 3800)]
             for idx, part in enumerate(msg_parts):
                 await send_to_logger(f"👑 <b>Scan (Part {idx+1}/{len(msg_parts)}) - {alias}</b>\n\n{part}")
-                await asyncio.sleep(0.5) # Anti flood for logger
+                await asyncio.sleep(0.5) 
     
     except Exception as e:
         await update.callback_query.message.edit_text(f"❌ Error scanning groups: {e}", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
@@ -1259,30 +1297,41 @@ async def run_userbot_admin_broadcast(update: Update, context: ContextTypes.DEFA
     try:
         client = Client(name=ub_id, session_string=session_str, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         await client.connect()
-        me = await client.get_me()
-        my_id = me.id if me and hasattr(me, 'id') else "me"
+        
+        my_id = None
+        try:
+            me = await client.get_me()
+            if me: my_id = me.id
+        except Exception:
+            pass
+            
         sent, failed = 0, 0
         
-        # UPGRADED: DEEP SAFE CHECK
+        # COMPLETELY SAFE RE-WRITE TO BYPASS "my_id" CRASH
         async for dialog in client.get_dialogs():
             try:
                 if not dialog or not dialog.chat: continue
                 chat = dialog.chat
                 
                 if chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]:
-                    try:
-                        member = await client.get_chat_member(chat.id, my_id)
-                    except Exception:
-                        continue
-                        
-                    if not member or not hasattr(member, 'status'): continue
+                    is_owner = getattr(chat, 'is_creator', False)
+                    is_admin = getattr(chat, 'privileges', None) is not None
                     
-                    if member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]:
+                    is_valid = is_owner or is_admin
+                    if not is_valid and my_id:
+                        try:
+                            member = await client.get_chat_member(chat.id, my_id)
+                            if member and member.status in [enums.ChatMemberStatus.OWNER, enums.ChatMemberStatus.ADMINISTRATOR]:
+                                is_valid = True
+                        except Exception:
+                            pass
+                    
+                    if is_valid:
                         await client.send_message(chat.id, msg_text, parse_mode=enums.ParseMode.HTML)
                         sent += 1
                         await asyncio.sleep(1)
             except Exception:
-                failed += 1 # Gracefully skip broken dialogs
+                failed += 1 
 
         await client.disconnect()
         await reply.edit_text(f"✅ Userbot Broadcast Complete for {alias}!\n\n📤 Sent: {sent}\n❌ Failed: {failed}", reply_markup=userbot_single_keyboard(ub_id))
@@ -1953,7 +2002,8 @@ async def handle_ub_add_string(update: Update, context: ContextTypes.DEFAULT_TYP
         await client.connect()
         me = await client.get_me()
         await client.disconnect()
-        alias = me.first_name or "Imported Account"
+        first_name = getattr(me, 'first_name', None) if me else "Imported"
+        alias = first_name or "Imported Account"
         _save_userbot(session_str, alias=alias)
         ub_id = hashlib.md5(session_str.encode()).hexdigest()[:10]
         asyncio.create_task(start_userbot_listener(ub_id, session_str, alias))
@@ -1974,7 +2024,8 @@ async def handle_ub_add_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await client.connect()
             me = await client.get_me()
             await client.disconnect()
-            alias = f"Bulk_{me.first_name or success+1}"
+            first_name = getattr(me, 'first_name', None) if me else str(success+1)
+            alias = f"Bulk_{first_name}"
             _save_userbot(s, alias=alias)
             ub_id = hashlib.md5(s.encode()).hexdigest()[:10]
             asyncio.create_task(start_userbot_listener(ub_id, s, alias))
@@ -2012,7 +2063,8 @@ async def handle_ub_add_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await client.connect()
                     me = await client.get_me()
                     await client.disconnect()
-                    alias = f"Restored_{me.first_name or success+1}"
+                    first_name = getattr(me, 'first_name', None) if me else str(success+1)
+                    alias = f"Restored_{first_name}"
                     _save_userbot(s, alias=alias)
                     ub_id = hashlib.md5(s.encode()).hexdigest()[:10]
                     asyncio.create_task(start_userbot_listener(ub_id, s, alias))
